@@ -21,18 +21,19 @@ TAKEOFF_HEIGHT = 0.5
 TAKEOFF_TIME   = 1.0
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
-GATE_APPROACH_OFFSET  = 0.3   # m vor dem Gate-Zentrum
-GATE_EXIT_OFFSET      = 0.3   # m hinter dem Gate-Zentrum
-OBSTACLE_MARGIN       = 0.20  # physischer Radius der Hindernisse (m)
+GATE_APPROACH_OFFSET  = 0.2   # m vor dem Gate-Zentrum
+GATE_EXIT_OFFSET      = 0.1   # m hinter dem Gate-Zentrum
+OBSTACLE_MARGIN       = 0.15  # physischer Radius der Hindernisse (m)
 GRID_RESOLUTION       = 0.03  # Hindernisauflösung (m)
 APPROACH_THRESHOLD    = 0.20  # m – wann gilt Approach als erreicht?
 GATE_HALF_WIDTH       = 0.40  # etwas größer als echte Gate-Öffnung
-GATE_MARGIN           = 0.12  # kleinere Inflation für Gate-Rahmen
-TIME_SCALE            = 3.0   # Zeitfaktor für Spline-Geschwindigkeit
+GATE_MARGIN           = 0.15  # kleinere Inflation für Gate-Rahmen
+TIME_SCALE            = 2.0   # Zeitfaktor für Spline-Geschwindigkeit
 SLOWNDOWN_SCALE       = 2.0   # Faktor um letzten Abschnitt zu verlangsamen
 GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate (Spline einfrieren)
 SENSOR_RANGE          = 0.7   # m – 100 for level 0,1, 0.7 für level 2
 PATH_STEP_LENGTH       = 0.2  # m – Abstand der Wegpunkte im Pfadplaner
+TIMEOUT_REPLAN         = 0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -197,7 +198,7 @@ class MyController(Controller):
             self._mark_circle(grid, pole1, inflate_gate, min_bounds)
             self._mark_circle(grid, pole2, inflate_gate, min_bounds)
 
-        # other gates als waand darstellen, wegen höhenkonflikten entlang gate breite
+        # other gates als wand darstellen, wegen höhenkonflikten entlang gate breite
         for i in range(self._n_gates):
             if i == current_gate:
                 continue
@@ -206,7 +207,7 @@ class MyController(Controller):
             normal /= np.linalg.norm(normal) + 1e-9
             perp = np.array([-normal[1], normal[0]])  # entlang Gate-Breite
 
-            for offset in np.linspace(-GATE_APPROACH_OFFSET, GATE_APPROACH_OFFSET, num=5):
+            for offset in np.linspace(-GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int (GATE_HALF_WIDTH * 100.0)):
                 wall_point = gate_center + offset * perp
                 self._mark_circle(grid, wall_point, inflate_gate, min_bounds)
 
@@ -472,15 +473,6 @@ class MyController(Controller):
 
         self._current_exit = exit_pt.copy()
 
-        xy = np.vstack([
-        np.array(path_xy_1),
-        approach[:2],          # 🔴 FORCE
-        np.array(path_xy_2)[1:],
-        center[:2],            # 🔴 FORCE
-        np.array(path_xy_3)[1:],
-        exit_pt[:2]            # 🔴 FORCE
-        ])
-
         # Doppelte Punkte entfernen (können durch approach/center/exit Einfügung entstehen)
         def remove_duplicate_points(xy, eps=1e-3):
             filtered = [xy[0]]
@@ -489,17 +481,24 @@ class MyController(Controller):
                     filtered.append(p)
             return np.array(filtered)
 
-        xy = remove_duplicate_points(xy)
-        
-        gate_z   = self._gate_pos[gate_id][2]
+        path_xy_1 = remove_duplicate_points(path_xy_1)
+        path_xy_2 = remove_duplicate_points(path_xy_2)
+        path_xy_3 = remove_duplicate_points(path_xy_3)
 
-        # Drohen erst bei exit_pt auf Gate höhe - zu spät !!!
-        # z         = np.linspace(start_pos[2], gate_z, len(xy))
-        # waypoints = np.column_stack([xy, z])
+        # add a z coordinate to the path points, so we can use them as spline waypoints
+        # z should descent or ascent smoothly from start to end of each segment
+        path_z_1 = np.linspace(start_pos[2], approach[2], len(path_xy_1))
+        path_1 = np.column_stack([path_xy_1, path_z_1])
+        path_z_2 = np.linspace(approach[2], center[2], len(path_xy_2))
+        path_2 = np.column_stack([path_xy_2, path_z_2])
+        path_z_3 = np.linspace(center[2], exit_pt[2], len(path_xy_3))
+        path_3 = np.column_stack([path_xy_3, path_z_3])
 
-        # Stattdessen: sofort auf Gate-Höhe gehen, damit wir nicht zu spät sind
-        z         = np.full(len(xy), gate_z)
-        waypoints = np.column_stack([xy, z])
+        waypoints = np.vstack([
+        np.array(path_1),
+        np.array(path_2)[1:],  # remove duplicate approach point
+        np.array(path_3)[1:],   
+        ])
 
         waypoints[0] = start_pos.copy()
 
@@ -522,7 +521,7 @@ class MyController(Controller):
 
         current_vel = self._spline_vel(t_sp) if self._spline else np.zeros(3)
 
-        self._spline = CubicSpline(t_knots, waypoints, bc_type="not-a-knot")
+        self._spline = CubicSpline(t_knots, waypoints, bc_type=((1, current_vel), (1, np.zeros(3))))
         # self._spline     = CubicSpline(t_knots, waypoints, bc_type="natural")
         self._spline_vel = self._spline.derivative()
         self._t_start_tick = self._tick
@@ -584,7 +583,7 @@ class MyController(Controller):
         # Bedingungen für neue Spline-Berechnung:
         # Timeout - Ende der spline reached, update auf Zielgate
         t_elapsed = (self._tick - self._t_start_tick) / self._freq
-        if t_elapsed > self._t_total:
+        if t_elapsed > self._t_total + TIMEOUT_REPLAN:
             print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="timeout")
@@ -651,10 +650,8 @@ class MyController(Controller):
 
         target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
         delta      = target_pos - pos
-        if dist_to_gate < GATE_PROXIMITY_THRESHOLD:
-            des_yaw = des_yaw = float(np.arctan2(float(self._gate_normal(self._active_gate)[1]), float(self._gate_normal(self._active_gate)[0])))
-        else:
-            des_yaw    = float(np.arctan2(delta[1], delta[0]))
+
+        des_yaw    = float(np.arctan2(delta[1], delta[0]))
 
         if self._tick % 20 == 0:
             print(f"  [t={t:.2f}] gate={self._active_gate} "
