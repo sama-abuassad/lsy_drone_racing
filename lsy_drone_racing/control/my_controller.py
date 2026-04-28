@@ -134,7 +134,7 @@ class MyController(Controller):
     #     print("=====================\n")
     #     return gate_data
 
-    def _filter_trusted_obstacles(self, obs, pos):
+    def _filter_trusted_obstacles(self, obs, pos: Any) -> np.ndarray:
         trusted = []
         pos_xy = pos[:2]
         for o in obs["obstacles_pos"]:
@@ -147,7 +147,7 @@ class MyController(Controller):
 
     # ── Occupancy Grid ────────────────────────────────────────────────────────
 
-    def _world_to_grid(self, xy):
+    def _world_to_grid(self, xy: np.ndarray) -> np.ndarray | None:
         idx = ((xy - self._grid_origin) / self._grid_res).astype(int)
 
         if not (0 <= idx[0] < self._grid_shape[0] and 0 <= idx[1] < self._grid_shape[1]):
@@ -228,7 +228,7 @@ class MyController(Controller):
 
         return grid
 
-    def _mark_circle(self, grid, xy, inflate, min_bounds):
+    def _mark_circle(self, grid, xy, inflate, min_bounds) -> None:
         """Markiert einen Kreis im 2D-Grid."""
         idx = ((xy - min_bounds) / self._grid_res).astype(int)
         idx = np.clip(idx, 0, np.array(grid.shape) - 1)
@@ -242,7 +242,7 @@ class MyController(Controller):
 
     # we need to unite the attributes of the search alorithms to find a good path
     # without many strict curves whise respecting the occupancy grid
-    def _custom_star(self, grid, start, goal, step_length=PATH_STEP_LENGTH, n_samples=8):
+    def _custom_star(self, grid, start, goal, step_length=PATH_STEP_LENGTH, n_samples=8) -> Any:
 
         start_xy = start[:2].copy()
         goal_xy = goal[:2].copy()
@@ -261,7 +261,7 @@ class MyController(Controller):
                     return False
             return True
 
-        def is_valid_waypoint(grid, p, prev):
+        def is_valid_waypoint(grid, p, prev) -> bool:
             """Point must be free AND reachable in a straight line from prev."""
             return not is_occupied(grid, p) and line_clear(grid, prev, p)
 
@@ -449,7 +449,7 @@ class MyController(Controller):
 
         return False
 
-    def _build_spline(self, start_pos, gate_id, obs, label=""):
+    def _build_spline(self, start_pos, gate_id, obs, label="") -> None:
 
         # Debug: Gate-Info ausgeben
         # self.print_gate_info(drone_pos=start_pos)
@@ -474,7 +474,7 @@ class MyController(Controller):
         self._current_exit = exit_pt.copy()
 
         # Doppelte Punkte entfernen (können durch approach/center/exit Einfügung entstehen)
-        def remove_duplicate_points(xy, eps=1e-3):
+        def remove_duplicate_points(xy, eps=1e-3) -> np.ndarray:
             filtered = [xy[0]]
             for p in xy[1:]:
                 if np.linalg.norm(p - filtered[-1]) > eps:
