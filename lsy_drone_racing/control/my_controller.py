@@ -9,6 +9,8 @@ from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation as R
 from lsy_drone_racing.control import Controller
 
+import matplotlib.pyplot as plt
+
 import sys
 sys.stdout = open("output.log", "w")
 
@@ -21,17 +23,16 @@ TAKEOFF_TIME   = 1.0
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET  = 0.3   # m vor dem Gate-Zentrum
 GATE_EXIT_OFFSET      = 0.3   # m hinter dem Gate-Zentrum
-OBSTACLE_MARGIN       = 0.25  # physischer Radius der Hindernisse (m)
-GRID_RESOLUTION       = 0.15  # A*-Auflösung (m)
-APPROACH_THRESHOLD    = 0.15  # m – wann gilt Approach als erreicht?
-GATE_THRESHOLD        = 0.12  # m – wann gilt Gate-Zentrum als erreicht?
-GATE_HALF_WIDTH       = 0.45  # etwas größer als echte Gate-Öffnung
+OBSTACLE_MARGIN       = 0.20  # physischer Radius der Hindernisse (m)
+GRID_RESOLUTION       = 0.03  # Hindernisauflösung (m)
+APPROACH_THRESHOLD    = 0.20  # m – wann gilt Approach als erreicht?
+GATE_HALF_WIDTH       = 0.40  # etwas größer als echte Gate-Öffnung
 GATE_MARGIN           = 0.12  # kleinere Inflation für Gate-Rahmen
 TIME_SCALE            = 3.0   # Zeitfaktor für Spline-Geschwindigkeit
 SLOWNDOWN_SCALE       = 2.0   # Faktor um letzten Abschnitt zu verlangsamen
-REPLAN_INTERVAL       = 0.05   # s – wie oft replanen (außer bei Nähe zum Gate)
 GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate (Spline einfrieren)
 SENSOR_RANGE          = 0.7   # m – 100 for level 0,1, 0.7 für level 2
+PATH_STEP_LENGTH       = 0.05  # m – Abstand der Wegpunkte im Pfadplaner
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -55,7 +56,7 @@ class MyController(Controller):
         self._pos_integral = np.zeros(3)
         self._current_goal  = None
 
-        self._last_obstacles = np.empty((0, 8))
+        self._active_gate = int(obs["target_gate"])
 
         print("\n========== INIT ==========")
         print(f"  n_gates      : {self._n_gates}")
@@ -140,16 +141,36 @@ class MyController(Controller):
 
     # ── Occupancy Grid ────────────────────────────────────────────────────────
 
+    def _world_to_grid(self, xy):
+        idx = ((xy - self._grid_origin) / self._grid_res).astype(int)
+
+        if not (0 <= idx[0] < self._grid_shape[0] and
+                0 <= idx[1] < self._grid_shape[1]):
+            return None
+
+        return idx
+
     def _build_occupancy_grid(self, obs: dict, start_pos: np.ndarray, current_gate: int) -> np.ndarray:
         obstacles = obs["obstacles_pos"]
-        print(f"  [build grid] raw obstacles:\n{np.round(obstacles,3)}")
         # obstacles = self._filter_trusted_obstacles(obs, start_pos)
-        all_points = np.vstack([self._gate_pos[:, :2], obstacles[:, :2]])
-        min_bounds = np.min(all_points, axis=0) - 3
-        max_bounds = np.max(all_points, axis=0) + 3
+        print(f"  [build grid] raw obstacles:\n{np.round(obstacles,3)}")
+
+        WORLD_MARGIN = 5.0
+
+        all_points = self._gate_pos[:, :2]
+
+        min_bounds = np.min(all_points, axis=0) - WORLD_MARGIN
+        max_bounds = np.max(all_points, axis=0) + WORLD_MARGIN
 
         self._grid_origin = min_bounds
+        self._grid_max    = max_bounds
         self._grid_res    = GRID_RESOLUTION
+
+        grid_size = np.ceil((max_bounds - min_bounds) / GRID_RESOLUTION).astype(int)
+        self._grid_shape = grid_size
+
+        # self._grid_origin = min_bounds
+        # self._grid_res    = GRID_RESOLUTION
 
         grid_size = np.ceil((max_bounds - min_bounds) / GRID_RESOLUTION).astype(int)
         grid = np.zeros(grid_size, dtype=bool)
@@ -180,6 +201,13 @@ class MyController(Controller):
                 pt = gate_center + offset * perp
                 self._mark_circle(grid, pt, inflate_gate, min_bounds)
 
+        # Speichert das Grid als Bild ab, damit du siehst, was A* sieht
+        plt.imshow(grid.T, origin='lower', extent=[min_bounds[0], max_bounds[0], min_bounds[1], max_bounds[1]])
+        plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5) # Hindernisse einzeichnen
+        plt.title("Occupancy Grid Debug")
+        plt.savefig("grid_debug.png")
+        plt.close()
+
         return grid
 
     def _mark_circle(self, grid, xy, inflate, min_bounds):
@@ -194,248 +222,20 @@ class MyController(Controller):
                 if 0 <= x < grid.shape[0] and 0 <= y < grid.shape[1]:
                     grid[x, y] = True
 
-    # # ── A* ────────────────────────────────────────────────────────────────────
-    # def _astar(self, start: np.ndarray, goal: np.ndarray, grid: np.ndarray):
-    #     def to_grid(p):
-    #         return tuple(np.clip(
-    #             ((p[:2] - self._grid_origin) / self._grid_res).astype(int),
-    #             0, np.array(grid.shape) - 1
-    #         ))
-
-    #     def to_world_xy(idx):
-    #         return self._grid_origin + self._grid_res * np.array(idx, dtype=float)
-
-    #     start_idx = to_grid(start)
-    #     goal_idx  = to_grid(goal)
-
-    #     if grid[start_idx]: grid = grid.copy(); grid[start_idx] = False
-    #     if grid[goal_idx]:  grid = grid.copy(); grid[goal_idx]  = False
-
-    #     neighbors = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
-
-    #     open_set = []
-    #     heapq.heappush(open_set, (0.0, start_idx))
-    #     came_from = {}
-    #     g_score   = {start_idx: 0.0}
-
-    #     while open_set:
-    #         _, current = heapq.heappop(open_set)
-    #         if current == goal_idx:
-    #             path_xy = []
-    #             while current in came_from:
-    #                 path_xy.append(to_world_xy(current))
-    #                 current = came_from[current]
-    #             path_xy.append(start[:2].copy())
-    #             return path_xy[::-1]   # nur XY-Punkte!
-
-    #         for d in neighbors:
-    #             nb = (current[0]+d[0], current[1]+d[1])
-    #             if not (0 <= nb[0] < grid.shape[0] and 0 <= nb[1] < grid.shape[1]):
-    #                 continue
-    #             if grid[nb]: continue
-    #             tentative = g_score[current] + np.linalg.norm(d)
-    #             if nb not in g_score or tentative < g_score[nb]:
-    #                 came_from[nb] = current
-    #                 g_score[nb]   = tentative
-    #                 h = np.linalg.norm(np.array(nb) - np.array(goal_idx))
-    #                 heapq.heappush(open_set, (tentative + h, nb))
-    #     return None
-
-    # We replace A* withg rrt- star so we can start the path independent of grid
-    # we check still if the node placed is in an occupied cell,
-    # but we are not limited to the grid connectivity
-    # 
-
-    # def _rrt_star(self, start, goal, grid, n_samples=3000, step_size=0.2, radius=0.4):
-    #     nodes = [start[:2].copy()]
-    #     parents = [-1]
-    #     costs = [0.0]
-
-    #     def in_collision(p):
-    #         idx = ((p - self._grid_origin) / self._grid_res).astype(int)
-    #         idx = np.clip(idx, 0, np.array(grid.shape) - 1)
-    #         return grid[idx[0], idx[1]]
-
-    #     def line_clear(a, b, n_checks=10):
-    #         for i in range(n_checks + 1):
-    #             p = a + (b - a) * i / n_checks
-    #             if in_collision(p):
-    #                 return False
-    #         return True
-
-    #     for _ in range(n_samples):
-    #         # Sample: bias toward goal 20% of the time
-    #         if np.random.rand() < 0.2:
-    #             sample = goal[:2].copy()
-    #         else:
-    #             sample = self._grid_origin + np.random.rand(2) * (
-    #                 np.array(grid.shape) * self._grid_res
-    #             )
-
-    #         # Find nearest node
-    #         dists = np.linalg.norm(np.array(nodes) - sample, axis=1)
-    #         nearest_idx = int(np.argmin(dists))
-    #         nearest = nodes[nearest_idx]
-
-    #         # Step toward sample
-    #         direction = sample - nearest
-    #         dist = np.linalg.norm(direction)
-    #         if dist < 1e-6:
-    #             continue
-    #         new_pt = nearest + (direction / dist) * min(step_size, dist)
-
-    #         if in_collision(new_pt):
-    #             continue
-
-    #         # RRT* rewiring
-    #         new_cost = costs[nearest_idx] + np.linalg.norm(new_pt - nearest)
-    #         best_parent = nearest_idx
-
-    #         for i, node in enumerate(nodes):
-    #             if np.linalg.norm(node - new_pt) < radius:
-    #                 candidate_cost = costs[i] + np.linalg.norm(new_pt - node)
-    #                 if candidate_cost < new_cost and line_clear(node, new_pt):
-    #                     new_cost = candidate_cost
-    #                     best_parent = i
-
-    #         if not line_clear(nodes[best_parent], new_pt):
-    #             continue
-
-    #         nodes.append(new_pt)
-    #         parents.append(best_parent)
-    #         costs.append(new_cost)
-
-    #         # Early exit if close to goal
-    #         if np.linalg.norm(new_pt - goal[:2]) < step_size:
-    #             break
-
-    #     # Find best node near goal
-    #     dists_to_goal = np.linalg.norm(np.array(nodes) - goal[:2], axis=1)
-    #     best = int(np.argmin(dists_to_goal))
-
-    #     # Reconstruct path
-    #     path = []
-    #     idx = best
-    #     while idx != -1:
-    #         path.append(nodes[idx])
-    #         idx = parents[idx]
-    #     return path[::-1]
-
-    # def _theta_star(self, start: np.ndarray, goal: np.ndarray, grid: np.ndarray):
-
-    #     def to_grid(p):
-    #         return tuple(np.clip(
-    #             ((np.array(p[:2]) - self._grid_origin) / self._grid_res).astype(int),
-    #             0, np.array(grid.shape) - 1
-    #         ))
-
-    #     def to_world(idx):
-    #         return self._grid_origin + self._grid_res * np.array(idx, dtype=float)
-
-    #     def line_of_sight(a_idx, b_idx):
-    #         x0, y0 = a_idx
-    #         x1, y1 = b_idx
-    #         dx, dy = abs(x1 - x0), abs(y1 - y0)
-    #         sx = 1 if x0 < x1 else -1
-    #         sy = 1 if y0 < y1 else -1
-    #         err = dx - dy
-    #         x, y = x0, y0
-    #         while True:
-    #             if not (0 <= x < grid.shape[0] and 0 <= y < grid.shape[1]):
-    #                 return False
-    #             if grid[x, y]:
-    #                 return False
-    #             if x == x1 and y == y1:
-    #                 return True
-    #             e2 = 2 * err
-    #             if e2 > -dy: err -= dy; x += sx
-    #             if e2 <  dx: err += dx; y += sy
-
-    #     start_idx = to_grid(start)
-    #     goal_idx  = to_grid(goal)
-
-    #     g = grid.copy()
-    #     if g[start_idx]: g[start_idx] = False
-    #     if g[goal_idx]:  g[goal_idx]  = False
-
-    #     neighbors = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
-
-    #     open_set = []
-    #     heapq.heappush(open_set, (0.0, start_idx))
-
-    #     # ── KEY CHANGE: store world-space parent positions ──────────────────────
-    #     # came_from maps grid_idx → (parent_grid_idx, parent_world_xy)
-    #     # For start, parent is itself at exact drone position (not snapped)
-    #     came_from = {start_idx: (start_idx, start[:2].copy())}
-    #     g_score   = {start_idx: 0.0}
-
-    #     while open_set:
-    #         _, current = heapq.heappop(open_set)
-
-    #         if current == goal_idx:
-    #             # Reconstruct using stored world positions
-    #             path = []
-    #             node = current
-    #             while True:
-    #                 parent_idx, parent_world = came_from[node]
-    #                 if node == start_idx:
-    #                     path.append(start[:2].copy())  # exact start, not snapped
-    #                     break
-    #                 path.append(to_world(node))
-    #                 node = parent_idx
-    #             path.reverse()
-    #             path.append(goal[:2].copy())  # exact goal, not snapped
-    #             return np.array(path)
-
-    #         parent_idx, parent_world = came_from[current]
-
-    #         for d in neighbors:
-    #             nb = (current[0] + d[0], current[1] + d[1])
-    #             if not (0 <= nb[0] < g.shape[0] and 0 <= nb[1] < g.shape[1]):
-    #                 continue
-    #             if g[nb]:
-    #                 continue
-
-    #             nb_world = to_world(nb)
-
-    #             if line_of_sight(parent_idx, nb):
-    #                 # Path 2: grandparent → nb using exact parent world pos
-    #                 tentative = g_score[parent_idx] + np.linalg.norm(nb_world - parent_world)
-    #                 if nb not in g_score or tentative < g_score[nb]:
-    #                     came_from[nb] = (parent_idx, parent_world)
-    #                     g_score[nb]   = tentative
-    #                     h = np.linalg.norm(nb_world - to_world(goal_idx))
-    #                     heapq.heappush(open_set, (tentative + h, nb))
-    #             else:
-    #                 # Path 1: current → nb
-    #                 current_world = to_world(current)
-    #                 tentative = g_score[current] + np.linalg.norm(nb_world - current_world)
-    #                 if nb not in g_score or tentative < g_score[nb]:
-    #                     came_from[nb] = (current, current_world)
-    #                     g_score[nb]   = tentative
-    #                     h = np.linalg.norm(nb_world - to_world(goal_idx))
-    #                     heapq.heappush(open_set, (tentative + h, nb))
-
-    #     print("  [Theta*] WARNING: no path found, using direct line")
-    #     return np.array([start[:2].copy(), goal[:2].copy()])
-
 
     # we need to unite the attributes of the search alorithms to find a good path
     # without many strict curves whise respecting the occupancy grid
-    def _custom_star(self, grid, start, goal, step_length= 0.2, n_samples=8):
+    def _custom_star(self, grid, start, goal, step_length=PATH_STEP_LENGTH, n_samples=8):
 
         start_xy = start[:2].copy()
         goal_xy  = goal[:2].copy()
 
         def is_occupied(grid, point_xy: np.ndarray) -> bool:
             """Returns True if the world-space XY point falls on an occupied grid cell."""
-            if not hasattr(self, '_grid_origin') or not hasattr(self, '_grid'):
-                return False
-            # 2. Welt-Koordinaten in Grid-Indizes umrechnen
-            # Formel: (Punkt - Ursprung) / Auflösung
-            idx = ((point_xy[:2] - self._grid_origin) / self._grid_res).astype(int)
-            
-            return bool(grid[idx[0], idx[1]])
+            idx = self._world_to_grid(point_xy)
+            if idx is None:
+                return True
+            return grid[idx[0], idx[1]]
         
         def line_clear(grid,a: np.ndarray, b: np.ndarray, n_checks: int = 12) -> bool:
             """True if the straight line from a to b has no occupied cells."""
@@ -579,21 +379,6 @@ class MyController(Controller):
 
     # ── Spline bauen ──────────────────────────────────────────────────────────
 
-    def _insert_gate_waypoints(self, path_xy, approach_xy, center_xy, exit_xy):
-        """Ersetzt den Teil des Pfades nahe dem Gate durch approach → center."""
-        # Finde den Punkt im Pfad der approach am nächsten ist
-        dists = np.linalg.norm(path_xy - approach_xy, axis=1)
-        idx   = int(np.argmin(dists))
-        # Schneide Pfad bei diesem Index ab und füge Pflichtpunkte ein
-        before  = path_xy[:idx]
-        after   = path_xy[idx+1:]  # alles hinter approach
-        # Finde auch center im verbleibenden Pfad
-        if len(after) > 0:
-            dists2 = np.linalg.norm(after - center_xy, axis=1)
-            idx2   = int(np.argmin(dists2))
-            after  = after[idx2+1:]
-        return np.vstack([before, [approach_xy], [center_xy], [exit_xy]]) if len(after) > 0 \
-               else np.vstack([before, [approach_xy], [center_xy]])
 
     def _gate_waypoints(self, gate_id: int, prev_pos: np.ndarray):
         # center = self._gate_pos[gate_id].copy()
@@ -668,8 +453,8 @@ class MyController(Controller):
         if path_xy_1 is None:
             print("  [WARNING] No path found to approach point! Using direct line.")
             path_xy_1 = np.array([from_pos[:2], approach[:2]])
-        path_xy_2 = np.array([approach[:2], center[:2]])
-        path_xy_3 = np.array([center[:2], exit_pt[:2]])
+        path_xy_2 = self._custom_star(grid, approach[:2], center[:2])
+        path_xy_3 = self._custom_star(grid, center[:2], exit_pt[:2])
 
         self._current_exit = exit_pt.copy()
 
@@ -756,7 +541,11 @@ class MyController(Controller):
         vel = obs["vel"]
         t   = self._tick / self._freq
         dt  = 1.0 / self._freq
-        current_gate = int(obs["target_gate"])
+
+        # we want the gate only to update after exit
+        # current_gate = int(obs["target_gate"])
+        current_gate = self._active_gate
+        obs_target_gate = int(obs["target_gate"])
 
         # ── Phase 1: Takeoff ──────────────────────────────────────────────────
         if t < TAKEOFF_TIME:
@@ -809,12 +598,16 @@ class MyController(Controller):
 
         if t_elapsed > self._t_total + 0.05:
             # Nur replan wenn noch nicht in der Nähe des Gates/dahinter
-            if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
-                print(f"  [timeout] replan, dist_to_gate={dist_to_gate:.2f}")
-                self._build_spline(pos, current_gate, obs, label="timeout_replan")
-            else:
-                # Spline eingefroren lassen – Drone ist schon nah genug
-                self._t_start_tick = self._tick  # Timer zurücksetzen damit kein Loop
+            # if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
+            # update target gate
+            if obs_target_gate != self._active_gate:
+                print(f"  Target gate changed from {self._active_gate} to {obs_target_gate}")
+                self._active_gate = obs_target_gate
+            print(f"  [timeout] replan, dist_to_gate={dist_to_gate:.2f}")
+            self._build_spline(pos, self._active_gate, obs, label="timeout_replan")
+            # else:
+            #     # Spline eingefroren lassen – Drone ist schon nah genug
+            #     self._t_start_tick = self._tick  # Timer zurücksetzen damit kein Loop
 
         t_sp    = min(t_elapsed, self._t_total)
         des_pos = self._spline(t_sp)
