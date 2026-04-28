@@ -21,7 +21,7 @@ TAKEOFF_TIME   = 1.0
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET  = 0.3   # m vor dem Gate-Zentrum
 GATE_EXIT_OFFSET      = 0.3   # m hinter dem Gate-Zentrum
-OBSTACLE_MARGIN       = 0.05  # physischer Radius der Hindernisse (m)
+OBSTACLE_MARGIN       = 0.25  # physischer Radius der Hindernisse (m)
 GRID_RESOLUTION       = 0.15  # A*-Auflösung (m)
 APPROACH_THRESHOLD    = 0.15  # m – wann gilt Approach als erreicht?
 GATE_THRESHOLD        = 0.12  # m – wann gilt Gate-Zentrum als erreicht?
@@ -145,8 +145,8 @@ class MyController(Controller):
         print(f"  [build grid] raw obstacles:\n{np.round(obstacles,3)}")
         # obstacles = self._filter_trusted_obstacles(obs, start_pos)
         all_points = np.vstack([self._gate_pos[:, :2], obstacles[:, :2]])
-        min_bounds = np.min(all_points, axis=0) - 1.5
-        max_bounds = np.max(all_points, axis=0) + 1.5
+        min_bounds = np.min(all_points, axis=0) - 3
+        max_bounds = np.max(all_points, axis=0) + 3
 
         self._grid_origin = min_bounds
         self._grid_res    = GRID_RESOLUTION
@@ -194,53 +194,389 @@ class MyController(Controller):
                 if 0 <= x < grid.shape[0] and 0 <= y < grid.shape[1]:
                     grid[x, y] = True
 
-    # ── A* ────────────────────────────────────────────────────────────────────
-    def _astar(self, start: np.ndarray, goal: np.ndarray, grid: np.ndarray):
-        def to_grid(p):
-            return tuple(np.clip(
-                ((p[:2] - self._grid_origin) / self._grid_res).astype(int),
-                0, np.array(grid.shape) - 1
-            ))
+    # # ── A* ────────────────────────────────────────────────────────────────────
+    # def _astar(self, start: np.ndarray, goal: np.ndarray, grid: np.ndarray):
+    #     def to_grid(p):
+    #         return tuple(np.clip(
+    #             ((p[:2] - self._grid_origin) / self._grid_res).astype(int),
+    #             0, np.array(grid.shape) - 1
+    #         ))
 
-        def to_world_xy(idx):
-            return self._grid_origin + self._grid_res * np.array(idx, dtype=float)
+    #     def to_world_xy(idx):
+    #         return self._grid_origin + self._grid_res * np.array(idx, dtype=float)
 
-        start_idx = to_grid(start)
-        goal_idx  = to_grid(goal)
+    #     start_idx = to_grid(start)
+    #     goal_idx  = to_grid(goal)
 
-        if grid[start_idx]: grid = grid.copy(); grid[start_idx] = False
-        if grid[goal_idx]:  grid = grid.copy(); grid[goal_idx]  = False
+    #     if grid[start_idx]: grid = grid.copy(); grid[start_idx] = False
+    #     if grid[goal_idx]:  grid = grid.copy(); grid[goal_idx]  = False
 
-        neighbors = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
+    #     neighbors = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
 
+    #     open_set = []
+    #     heapq.heappush(open_set, (0.0, start_idx))
+    #     came_from = {}
+    #     g_score   = {start_idx: 0.0}
+
+    #     while open_set:
+    #         _, current = heapq.heappop(open_set)
+    #         if current == goal_idx:
+    #             path_xy = []
+    #             while current in came_from:
+    #                 path_xy.append(to_world_xy(current))
+    #                 current = came_from[current]
+    #             path_xy.append(start[:2].copy())
+    #             return path_xy[::-1]   # nur XY-Punkte!
+
+    #         for d in neighbors:
+    #             nb = (current[0]+d[0], current[1]+d[1])
+    #             if not (0 <= nb[0] < grid.shape[0] and 0 <= nb[1] < grid.shape[1]):
+    #                 continue
+    #             if grid[nb]: continue
+    #             tentative = g_score[current] + np.linalg.norm(d)
+    #             if nb not in g_score or tentative < g_score[nb]:
+    #                 came_from[nb] = current
+    #                 g_score[nb]   = tentative
+    #                 h = np.linalg.norm(np.array(nb) - np.array(goal_idx))
+    #                 heapq.heappush(open_set, (tentative + h, nb))
+    #     return None
+
+    # We replace A* withg rrt- star so we can start the path independent of grid
+    # we check still if the node placed is in an occupied cell,
+    # but we are not limited to the grid connectivity
+    # 
+
+    # def _rrt_star(self, start, goal, grid, n_samples=3000, step_size=0.2, radius=0.4):
+    #     nodes = [start[:2].copy()]
+    #     parents = [-1]
+    #     costs = [0.0]
+
+    #     def in_collision(p):
+    #         idx = ((p - self._grid_origin) / self._grid_res).astype(int)
+    #         idx = np.clip(idx, 0, np.array(grid.shape) - 1)
+    #         return grid[idx[0], idx[1]]
+
+    #     def line_clear(a, b, n_checks=10):
+    #         for i in range(n_checks + 1):
+    #             p = a + (b - a) * i / n_checks
+    #             if in_collision(p):
+    #                 return False
+    #         return True
+
+    #     for _ in range(n_samples):
+    #         # Sample: bias toward goal 20% of the time
+    #         if np.random.rand() < 0.2:
+    #             sample = goal[:2].copy()
+    #         else:
+    #             sample = self._grid_origin + np.random.rand(2) * (
+    #                 np.array(grid.shape) * self._grid_res
+    #             )
+
+    #         # Find nearest node
+    #         dists = np.linalg.norm(np.array(nodes) - sample, axis=1)
+    #         nearest_idx = int(np.argmin(dists))
+    #         nearest = nodes[nearest_idx]
+
+    #         # Step toward sample
+    #         direction = sample - nearest
+    #         dist = np.linalg.norm(direction)
+    #         if dist < 1e-6:
+    #             continue
+    #         new_pt = nearest + (direction / dist) * min(step_size, dist)
+
+    #         if in_collision(new_pt):
+    #             continue
+
+    #         # RRT* rewiring
+    #         new_cost = costs[nearest_idx] + np.linalg.norm(new_pt - nearest)
+    #         best_parent = nearest_idx
+
+    #         for i, node in enumerate(nodes):
+    #             if np.linalg.norm(node - new_pt) < radius:
+    #                 candidate_cost = costs[i] + np.linalg.norm(new_pt - node)
+    #                 if candidate_cost < new_cost and line_clear(node, new_pt):
+    #                     new_cost = candidate_cost
+    #                     best_parent = i
+
+    #         if not line_clear(nodes[best_parent], new_pt):
+    #             continue
+
+    #         nodes.append(new_pt)
+    #         parents.append(best_parent)
+    #         costs.append(new_cost)
+
+    #         # Early exit if close to goal
+    #         if np.linalg.norm(new_pt - goal[:2]) < step_size:
+    #             break
+
+    #     # Find best node near goal
+    #     dists_to_goal = np.linalg.norm(np.array(nodes) - goal[:2], axis=1)
+    #     best = int(np.argmin(dists_to_goal))
+
+    #     # Reconstruct path
+    #     path = []
+    #     idx = best
+    #     while idx != -1:
+    #         path.append(nodes[idx])
+    #         idx = parents[idx]
+    #     return path[::-1]
+
+    # def _theta_star(self, start: np.ndarray, goal: np.ndarray, grid: np.ndarray):
+
+    #     def to_grid(p):
+    #         return tuple(np.clip(
+    #             ((np.array(p[:2]) - self._grid_origin) / self._grid_res).astype(int),
+    #             0, np.array(grid.shape) - 1
+    #         ))
+
+    #     def to_world(idx):
+    #         return self._grid_origin + self._grid_res * np.array(idx, dtype=float)
+
+    #     def line_of_sight(a_idx, b_idx):
+    #         x0, y0 = a_idx
+    #         x1, y1 = b_idx
+    #         dx, dy = abs(x1 - x0), abs(y1 - y0)
+    #         sx = 1 if x0 < x1 else -1
+    #         sy = 1 if y0 < y1 else -1
+    #         err = dx - dy
+    #         x, y = x0, y0
+    #         while True:
+    #             if not (0 <= x < grid.shape[0] and 0 <= y < grid.shape[1]):
+    #                 return False
+    #             if grid[x, y]:
+    #                 return False
+    #             if x == x1 and y == y1:
+    #                 return True
+    #             e2 = 2 * err
+    #             if e2 > -dy: err -= dy; x += sx
+    #             if e2 <  dx: err += dx; y += sy
+
+    #     start_idx = to_grid(start)
+    #     goal_idx  = to_grid(goal)
+
+    #     g = grid.copy()
+    #     if g[start_idx]: g[start_idx] = False
+    #     if g[goal_idx]:  g[goal_idx]  = False
+
+    #     neighbors = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
+
+    #     open_set = []
+    #     heapq.heappush(open_set, (0.0, start_idx))
+
+    #     # ── KEY CHANGE: store world-space parent positions ──────────────────────
+    #     # came_from maps grid_idx → (parent_grid_idx, parent_world_xy)
+    #     # For start, parent is itself at exact drone position (not snapped)
+    #     came_from = {start_idx: (start_idx, start[:2].copy())}
+    #     g_score   = {start_idx: 0.0}
+
+    #     while open_set:
+    #         _, current = heapq.heappop(open_set)
+
+    #         if current == goal_idx:
+    #             # Reconstruct using stored world positions
+    #             path = []
+    #             node = current
+    #             while True:
+    #                 parent_idx, parent_world = came_from[node]
+    #                 if node == start_idx:
+    #                     path.append(start[:2].copy())  # exact start, not snapped
+    #                     break
+    #                 path.append(to_world(node))
+    #                 node = parent_idx
+    #             path.reverse()
+    #             path.append(goal[:2].copy())  # exact goal, not snapped
+    #             return np.array(path)
+
+    #         parent_idx, parent_world = came_from[current]
+
+    #         for d in neighbors:
+    #             nb = (current[0] + d[0], current[1] + d[1])
+    #             if not (0 <= nb[0] < g.shape[0] and 0 <= nb[1] < g.shape[1]):
+    #                 continue
+    #             if g[nb]:
+    #                 continue
+
+    #             nb_world = to_world(nb)
+
+    #             if line_of_sight(parent_idx, nb):
+    #                 # Path 2: grandparent → nb using exact parent world pos
+    #                 tentative = g_score[parent_idx] + np.linalg.norm(nb_world - parent_world)
+    #                 if nb not in g_score or tentative < g_score[nb]:
+    #                     came_from[nb] = (parent_idx, parent_world)
+    #                     g_score[nb]   = tentative
+    #                     h = np.linalg.norm(nb_world - to_world(goal_idx))
+    #                     heapq.heappush(open_set, (tentative + h, nb))
+    #             else:
+    #                 # Path 1: current → nb
+    #                 current_world = to_world(current)
+    #                 tentative = g_score[current] + np.linalg.norm(nb_world - current_world)
+    #                 if nb not in g_score or tentative < g_score[nb]:
+    #                     came_from[nb] = (current, current_world)
+    #                     g_score[nb]   = tentative
+    #                     h = np.linalg.norm(nb_world - to_world(goal_idx))
+    #                     heapq.heappush(open_set, (tentative + h, nb))
+
+    #     print("  [Theta*] WARNING: no path found, using direct line")
+    #     return np.array([start[:2].copy(), goal[:2].copy()])
+
+
+    # we need to unite the attributes of the search alorithms to find a good path
+    # without many strict curves whise respecting the occupancy grid
+    def _custom_star(self, grid, start, goal, step_length= 0.2, n_samples=8):
+
+        start_xy = start[:2].copy()
+        goal_xy  = goal[:2].copy()
+
+        def is_occupied(grid, point_xy: np.ndarray) -> bool:
+            """Returns True if the world-space XY point falls on an occupied grid cell."""
+            if not hasattr(self, '_grid_origin') or not hasattr(self, '_grid'):
+                return False
+            # 2. Welt-Koordinaten in Grid-Indizes umrechnen
+            # Formel: (Punkt - Ursprung) / Auflösung
+            idx = ((point_xy[:2] - self._grid_origin) / self._grid_res).astype(int)
+            
+            return bool(grid[idx[0], idx[1]])
+        
+        def line_clear(grid,a: np.ndarray, b: np.ndarray, n_checks: int = 12) -> bool:
+            """True if the straight line from a to b has no occupied cells."""
+            for t in np.linspace(0.0, 1.0, n_checks):
+                if is_occupied(grid, a + t * (b - a)):
+                    return False
+            return True
+
+        def is_valid_waypoint(grid, p, prev):
+            """Point must be free AND reachable in a straight line from prev."""
+            return not is_occupied(grid, p) and line_clear(grid, prev, p)
+        
+        def heuristic(p: np.ndarray) -> float:
+            """Euclidean distance to goal — admissible, never overestimates."""
+            return float(np.linalg.norm(p - goal_xy))
+        
+        def circle_candidates(center: np.ndarray) -> np.ndarray:
+            """Generate n_samples evenly spaced on a circle around center."""
+            angles = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
+            # Bias first candidate toward goal direction
+            goal_angle = np.arctan2(goal_xy[1] - center[1], goal_xy[0] - center[0])
+            angles = angles + goal_angle  # rotate ring so one point aims at goal
+            return np.column_stack([
+                center[0] + step_length * np.cos(angles),
+                center[1] + step_length * np.sin(angles)
+            ])
+        
+        # ── Node storage ──────────────────────────────────────────────────────────
+        # Each node: [x, y]
+        nodes   = [start_xy.copy()]
+        parents = [-1]
+        g_costs = [0.0]                          # cost from start
+
+        # Open set: (f_cost, node_index)
         open_set = []
-        heapq.heappush(open_set, (0.0, start_idx))
-        came_from = {}
-        g_score   = {start_idx: 0.0}
+        heapq.heappush(open_set, (heuristic(start_xy), 0))
+        visited  = set()
 
-        while open_set:
-            _, current = heapq.heappop(open_set)
-            if current == goal_idx:
-                path_xy = []
-                while current in came_from:
-                    path_xy.append(to_world_xy(current))
-                    current = came_from[current]
-                path_xy.append(start[:2].copy())
-                return path_xy[::-1]   # nur XY-Punkte!
+        best_goal_idx  = -1
+        best_goal_cost = np.inf
 
-            for d in neighbors:
-                nb = (current[0]+d[0], current[1]+d[1])
-                if not (0 <= nb[0] < grid.shape[0] and 0 <= nb[1] < grid.shape[1]):
+        # ── Main loop ─────────────────────────────────────────────────────────────
+        # iterate for maximum double the path length to goal in steps, to avoid infinite loops in complex scenarios
+        max_iterations = 2 * int(np.linalg.norm(start_xy - goal_xy) / step_length)
+        for iteration in range(max_iterations):
+            if not open_set:
+                break
+
+            f, current_idx = heapq.heappop(open_set)
+
+            # Skip if already expanded
+            if current_idx in visited:
+                continue
+            visited.add(current_idx)
+
+            current_pos  = nodes[current_idx]
+            current_g    = g_costs[current_idx]
+
+            # ── Early exit if we reached the goal ────────────────────────────────
+            if np.linalg.norm(current_pos - goal_xy) < step_length:
+                if line_clear(grid, current_pos, goal_xy):
+                    # Connect directly to goal
+                    nodes.append(goal_xy.copy())
+                    parents.append(current_idx)
+                    g_costs.append(current_g + np.linalg.norm(goal_xy - current_pos))
+                    best_goal_idx = len(nodes) - 1
+                    break
+
+            # ── Generate circle candidates ────────────────────────────────────────
+            candidates = circle_candidates(current_pos)
+
+            # Evaluate and filter each candidate
+            valid_candidates = []
+            for pt in candidates:
+                if not is_valid_waypoint(grid, pt, current_pos):
+                    continue  # line blocked or cell occupied — eliminate
+
+                g_new = current_g + step_length
+                h_new = heuristic(pt)
+                f_new = g_new + h_new
+
+                valid_candidates.append((f_new, g_new, pt))
+
+            if not valid_candidates:
+                continue
+
+            # Sort by f_cost — best candidates first
+            valid_candidates.sort(key=lambda x: x[0])
+
+            # Add all valid candidates as nodes (not just the best —
+            # lets the open set explore alternatives if best hits a dead end)
+            for f_new, g_new, pt in valid_candidates:
+                # Snap-check: don't add a point too close to an existing node
+                too_close = any(
+                    np.linalg.norm(pt - nodes[i]) < step_length * 0.4
+                    for i in range(max(0, len(nodes) - 30), len(nodes))  # check recent nodes only
+                )
+                if too_close:
                     continue
-                if grid[nb]: continue
-                tentative = g_score[current] + np.linalg.norm(d)
-                if nb not in g_score or tentative < g_score[nb]:
-                    came_from[nb] = current
-                    g_score[nb]   = tentative
-                    h = np.linalg.norm(np.array(nb) - np.array(goal_idx))
-                    heapq.heappush(open_set, (tentative + h, nb))
-        return None
-    
+
+                new_idx = len(nodes)
+                nodes.append(pt.copy())
+                parents.append(current_idx)
+                g_costs.append(g_new)
+                heapq.heappush(open_set, (f_new, new_idx))
+
+                # Track best node that can see the goal
+                if f_new < best_goal_cost and np.linalg.norm(pt - goal_xy) < step_length * 2:
+                    if line_clear(grid, pt, goal_xy):
+                        best_goal_cost = f_new
+                        best_goal_idx  = new_idx
+
+        # ── Reconstruct path ──────────────────────────────────────────────────────
+        if best_goal_idx < 0:
+            # No path reached goal — return closest node to goal
+            dists = [np.linalg.norm(n - goal_xy) for n in nodes]
+            best_goal_idx = int(np.argmin(dists))
+            print(f"  [custom_star] WARNING: goal not reached, "
+                  f"closest dist={dists[best_goal_idx]:.3f}m")
+
+        path = []
+        idx  = best_goal_idx
+        while idx != -1:
+            path.append(nodes[idx])
+            idx = parents[idx]
+        path.reverse()
+
+        # Always end exactly at goal
+        if np.linalg.norm(np.array(path[-1]) - goal_xy) > 0.02:
+            path.append(goal_xy.copy())
+
+        path = np.array(path)
+        print(f"  [custom_star] {len(nodes)} nodes expanded, "
+              f"path={len(path)} pts, "
+              f"iters={iteration+1}")
+        return path
+
+
+        
+        
+
     # ── Spline bauen ──────────────────────────────────────────────────────────
 
     def _insert_gate_waypoints(self, path_xy, approach_xy, center_xy, exit_xy):
@@ -328,7 +664,7 @@ class MyController(Controller):
         approach, center, exit_pt = self._gate_waypoints(gate_id, from_pos)
         # Baue Occupancy Grid und finde Pfad von aktueller Position zum approach point
         grid = self._build_occupancy_grid(obs, start_pos, gate_id)
-        path_xy_1 = self._astar(from_pos, approach, grid)
+        path_xy_1 = self._custom_star(grid, from_pos[:2], approach[:2], step_length=0.2)
         if path_xy_1 is None:
             print("  [WARNING] No path found to approach point! Using direct line.")
             path_xy_1 = np.array([from_pos[:2], approach[:2]])
@@ -369,7 +705,7 @@ class MyController(Controller):
         waypoints[0] = start_pos.copy()
 
         # we want to only ake a certain amount of waitpoints, so we recalculate more often
-        waypoints = waypoints[:20]
+        # waypoints = waypoints[:20]
 
         # Zeitparametrisierung: gleichmäßig nach Distanz, mit Slow-down am Ende
         dists = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
