@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 TAKEOFF_HEIGHT = 0.5
-TAKEOFF_TIME   = 3.0
+TAKEOFF_TIME   = 1.0
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET  = 0.3   # m vor dem Gate-Zentrum
@@ -27,8 +27,8 @@ APPROACH_THRESHOLD    = 0.15  # m – wann gilt Approach als erreicht?
 GATE_THRESHOLD        = 0.12  # m – wann gilt Gate-Zentrum als erreicht?
 GATE_HALF_WIDTH       = 0.45  # etwas größer als echte Gate-Öffnung
 GATE_MARGIN           = 0.12  # kleinere Inflation für Gate-Rahmen
-TIME_SCALE            = 2.0   # Zeitfaktor für Spline-Geschwindigkeit
-SLOWNDOWN_SCALE       = 4.0   # Faktor um letzten Abschnitt zu verlangsamen
+TIME_SCALE            = 3.0   # Zeitfaktor für Spline-Geschwindigkeit
+SLOWNDOWN_SCALE       = 2.0   # Faktor um letzten Abschnitt zu verlangsamen
 REPLAN_INTERVAL       = 0.05   # s – wie oft replanen (außer bei Nähe zum Gate)
 GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate (Spline einfrieren)
 SENSOR_RANGE          = 0.7   # m – 100 for level 0,1, 0.7 für level 2
@@ -287,7 +287,7 @@ class MyController(Controller):
     def _obstacles_changed(self, obs, pos):
         current = self._filter_trusted_obstacles(obs, pos)
 
-        print(f"  [obstacle check] current trusted obstacles:\n{np.round(current,3)}")
+        # print(f"  [obstacle check] current trusted obstacles:\n{np.round(current,3)}")
 
         # First call → initialize
         if not hasattr(self, "_last_trusted"):
@@ -316,6 +316,7 @@ class MyController(Controller):
 
         # Debug: Gate-Info ausgeben
         self.print_gate_info(drone_pos=start_pos)
+        self._pos_integral[:] = 0.0
 
         from_pos = start_pos
 
@@ -365,6 +366,11 @@ class MyController(Controller):
         z         = np.full(len(xy), gate_z)
         waypoints = np.column_stack([xy, z])
 
+        waypoints[0] = start_pos.copy()
+
+        # we want to only ake a certain amount of waitpoints, so we recalculate more often
+        waypoints = waypoints[:20]
+
         # Zeitparametrisierung: gleichmäßig nach Distanz, mit Slow-down am Ende
         dists = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
         dists = np.maximum(dists, 0.01)
@@ -376,7 +382,13 @@ class MyController(Controller):
         t_knots = np.concatenate([[0.0], np.cumsum(dists * t_scale * TIME_SCALE)])
         self._t_total = t_knots[-1]
 
-        self._spline     = CubicSpline(t_knots, waypoints, bc_type="natural")
+        t_elapsed = (self._tick - self._t_start_tick) / self._freq
+        t_sp = min(t_elapsed, self._t_total)
+
+        current_vel = self._spline_vel(t_sp) if self._spline else np.zeros(3)
+
+        self._spline = CubicSpline(t_knots, waypoints, bc_type="not-a-knot")
+        # self._spline     = CubicSpline(t_knots, waypoints, bc_type="natural")
         self._spline_vel = self._spline.derivative()
         self._t_start_tick = self._tick
 
@@ -428,13 +440,13 @@ class MyController(Controller):
             print(f"\n>>> Entering phase 2 at tick={self._tick}, t={t:.3f}")
             self._build_spline(pos, gate_id=current_gate, obs=obs, label="phase2_init")
 
-        # This works with levels 0 and 1 but for level 2 we need more replanning
-        if hasattr(self, "_current_exit") and self._current_exit is not None:
-            dist_to_exit = np.linalg.norm(pos - self._current_exit)
-            if dist_to_exit < 0.15:
-                print(f"  Approaching exit point, dist_to_exit={dist_to_exit:.2f}")
-                self._current_exit = None
-                self._build_spline(pos, current_gate, obs, label="approach_exit")
+        # # This works with levels 0 and 1 but for level 2 we need more replanning
+        # if hasattr(self, "_current_exit") and self._current_exit is not None:
+        #     dist_to_exit = np.linalg.norm(pos - self._current_exit)
+        #     if dist_to_exit < 0.15:
+        #         print(f"  Approaching exit point, dist_to_exit={dist_to_exit:.2f}")
+        #         self._current_exit = None
+        #         self._build_spline(pos, current_gate, obs, label="approach_exit")
 
         gate_center = self._gate_pos[current_gate]
 
@@ -459,7 +471,7 @@ class MyController(Controller):
         # ── Spline auswerten ──────────────────────────────────────────────────
         t_elapsed = (self._tick - self._t_start_tick) / self._freq
 
-        if t_elapsed > self._t_total + 0.5:
+        if t_elapsed > self._t_total + 0.05:
             # Nur replan wenn noch nicht in der Nähe des Gates/dahinter
             if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
                 print(f"  [timeout] replan, dist_to_gate={dist_to_gate:.2f}")
@@ -471,22 +483,24 @@ class MyController(Controller):
         t_sp    = min(t_elapsed, self._t_total)
         des_pos = self._spline(t_sp)
         des_vel = self._spline_vel(t_sp)
+        des_vel = np.clip(des_vel, -1.0, 1.0)
 
-        if self._tick % 20 == 0:
-            future_t = min(t_sp + 0.5, self._t_total)
-            future_pos = self._spline(future_t)
+        # if self._tick % 20 == 0:
+        #     future_t = min(t_sp + 0.5, self._t_total)
+        #     future_pos = self._spline(future_t)
 
-            print(f"[PATH DEBUG]")
-            print(f"  current pos : {np.round(pos, 3)}")
-            print(f"  des_pos     : {np.round(des_pos, 3)}")
-            print(f"  next (0.5s) : {np.round(future_pos, 3)}")
+        #     print(f"[PATH DEBUG]")
+        #     print(f"  current pos : {np.round(pos, 3)}")
+        #     print(f"  des_pos     : {np.round(des_pos, 3)}")
+        #     print(f"  next (0.5s) : {np.round(future_pos, 3)}")
 
         # PID
         if dist_to_gate < GATE_PROXIMITY_THRESHOLD:
             print(f"  Near gate (dist={dist_to_gate:.2f}), using more conservative PID gains")
-            kp = np.array([1.0, 1.0, 0.1])
-            kd = np.array([1.0, 1.0, 0.05])
-            ki = np.array([5.0, 5.0, 5.5])
+            # Near gate: tighter proportional, moderate integral
+            kp = np.array([3.0, 3.0, 2.0])   # restore XY tracking strength
+            kd = np.array([3.0, 3.0, 1.5])
+            ki = np.array([1.0, 1.0, 0.5])   # reduce integral near gate to avoid windup
         else:
             kp = np.array([4.0, 4.0, 3.0])
             kd = np.array([2.0, 2.0, 1.5])
@@ -494,9 +508,13 @@ class MyController(Controller):
 
         scale = 3.0 / TIME_SCALE  # reference is your old stable value, 3.0 was stable
 
-        kp_new = kp * scale**2
-        kd_new = kd * scale
-        ki_new = ki * scale**2
+        # kp_new = kp * scale**2
+        # kd_new = kd * scale**2
+        # ki_new = ki * scale**2
+
+        kp_new = kp
+        kd_new = kd
+        ki_new = ki
 
         pos_error = des_pos - pos
         vel_error = des_vel - vel
@@ -508,8 +526,8 @@ class MyController(Controller):
 
         acc = kp_new * pos_error + kd_new * vel_error + ki_new * self._pos_integral
         # print(f"  [PID debug] pos_error={np.round(pos_error,3)} vel_error={np.round(vel_error,3)} acc={np.round(acc,3)}")
-        acc[:2] = np.clip(acc[:2], -4.0, 4.0)
-        acc[2]  = np.clip(acc[2], -4.0, 4.0)
+        acc[:2] = np.clip(acc[:2], -2.0, 2.0)
+        acc[2]  = np.clip(acc[2], -2.0, 2.0)
 
         # print(f"des_z={des_pos[2]:.2f}, actual_z={pos[2]:.2f}")
         # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)}, acc={np.round(acc,3)}")
@@ -533,6 +551,56 @@ class MyController(Controller):
 
     def step_callback(self, action, obs, reward, terminated, truncated, info) -> bool:
         self._tick += 1
+        if truncated:
+            print("\n ===== TIMEOUT DETECTED =====")
+
+            print(f"tick        : {self._tick}")
+            print(f"position    : {np.round(obs['pos'], 3)}")
+            print(f"velocity    : {np.round(obs['vel'], 3)}")
+
+            current_gate = int(obs["target_gate"])
+            print(f"target_gate : {current_gate}")
+
+            if current_gate < self._n_gates:
+                gate_pos = self._gate_pos[current_gate]
+                dist = np.linalg.norm(obs["pos"] - gate_pos)
+
+                print(f"gate_pos    : {np.round(gate_pos, 3)}")
+                print(f"dist_to_gate: {dist:.3f}")
+
+            if hasattr(self, "_current_exit") and self._current_exit is not None:
+                dist_exit = np.linalg.norm(obs["pos"] - self._current_exit)
+                print(f"dist_to_exit: {dist_exit:.3f}")
+
+            print("============================\n")
+
+
+        if terminated:
+            print("\n💥 ===== CRASH DETECTED =====")
+
+            print(f"tick        : {self._tick}")
+            print(f"position    : {np.round(obs['pos'], 3)}")
+            print(f"velocity    : {np.round(obs['vel'], 3)}")
+
+            current_gate = int(obs["target_gate"])
+            print(f"target_gate : {current_gate}")
+
+            if current_gate < self._n_gates:
+                gate_pos = self._gate_pos[current_gate]
+                dist = np.linalg.norm(obs["pos"] - gate_pos)
+
+                print(f"gate_pos    : {np.round(gate_pos, 3)}")
+                print(f"dist_to_gate: {dist:.3f}")
+
+            if hasattr(self, "_current_exit") and self._current_exit is not None:
+                dist_exit = np.linalg.norm(obs["pos"] - self._current_exit)
+                print(f"dist_to_exit: {dist_exit:.3f}")
+
+            trusted_obsactles = self._filter_trusted_obstacles(obs, obs["pos"])
+            print(f"trusted obstacles (in sensor range {SENSOR_RANGE}m):\n{np.round(trusted_obsactles,3)}")
+
+            print("============================\n")
+
         return terminated or truncated
 
     def episode_callback(self):
