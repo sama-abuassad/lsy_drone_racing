@@ -1,51 +1,49 @@
 """Gate-traversing state controller – fixed gate normal, subgoal logic, obstacle inflation."""
+
 from __future__ import annotations
-from typing import TYPE_CHECKING
 
 import heapq
-from lsy_drone_racing.envs.race_core import obs
+
 import numpy as np
+from numpy.typing import NDArray
 from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation as R
+
 from lsy_drone_racing.control import Controller
 
-# import matplotlib.pyplot as plt
-
-# import sys
-# sys.stdout = open("output.log", "w")
-
-# if TYPE_CHECKING:
-#     from numpy.typing import NDArray
-
 TAKEOFF_HEIGHT = 0.5
-TAKEOFF_TIME   = 1.0
+TAKEOFF_TIME = 1.0
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
-GATE_APPROACH_OFFSET  = 0.2   # m vor dem Gate-Zentrum
-GATE_EXIT_OFFSET      = 0.1   # m hinter dem Gate-Zentrum
-OBSTACLE_MARGIN       = 0.15  # physischer Radius der Hindernisse (m)
-GRID_RESOLUTION       = 0.03  # Hindernisauflösung (m)
-APPROACH_THRESHOLD    = 0.20  # m – wann gilt Approach als erreicht?
-GATE_HALF_WIDTH       = 0.40  # etwas größer als echte Gate-Öffnung
-GATE_MARGIN           = 0.15  # kleinere Inflation für Gate-Rahmen
-TIME_SCALE            = 2.0   # Zeitfaktor für Spline-Geschwindigkeit
-SLOWNDOWN_SCALE       = 2.0   # Faktor um letzten Abschnitt zu verlangsamen
+GATE_APPROACH_OFFSET = 0.2  # m vor dem Gate-Zentrum
+GATE_EXIT_OFFSET = 0.1  # m hinter dem Gate-Zentrum
+OBSTACLE_MARGIN = 0.15  # physischer Radius der Hindernisse (m)
+GRID_RESOLUTION = 0.03  # Hindernisauflösung (m)
+APPROACH_THRESHOLD = 0.20  # m – wann gilt Approach als erreicht?
+GATE_HALF_WIDTH = 0.40  # etwas größer als echte Gate-Öffnung
+GATE_MARGIN = 0.15  # kleinere Inflation für Gate-Rahmen
+TIME_SCALE = 2.0  # Zeitfaktor für Spline-Geschwindigkeit
+SLOWNDOWN_SCALE = 2.0  # Faktor um letzten Abschnitt zu verlangsamen
 GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate (Spline einfrieren)
-SENSOR_RANGE          = 0.7   # m – 100 for level 0,1, 0.7 für level 2
-PATH_STEP_LENGTH       = 0.2  # m – Abstand der Wegpunkte im Pfadplaner
-TIMEOUT_REPLAN         = 0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
+SENSOR_RANGE = 0.7  # m – 100 for level 0,1, 0.7 für level 2
+PATH_STEP_LENGTH = 0.2  # m – Abstand der Wegpunkte im Pfadplaner
+TIMEOUT_REPLAN = (
+    0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
+)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class MyController(Controller):
+    """Drone racing controller."""
 
     def __init__(self, obs: dict, info: dict, config: dict):
+        """Initialize controller."""
         super().__init__(obs, info, config)
-        self._freq   = config.env.freq
-        self._tick   = 0
+        self._freq = config.env.freq
+        self._tick = 0
         self._n_gates = len(obs["gates_pos"])
-        self._gate_pos    = obs["gates_pos"].copy()
-        self._gate_quat   = obs["gates_quat"].copy()
+        self._gate_pos = obs["gates_pos"].copy()
+        self._gate_quat = obs["gates_quat"].copy()
         self._gates_visited = obs["gates_visited"].copy()
         self._prev_target_gate = int(obs["target_gate"])
 
@@ -55,7 +53,7 @@ class MyController(Controller):
         self._t_start_tick = 0
 
         self._pos_integral = np.zeros(3)
-        self._current_goal  = None
+        self._current_goal = None
 
         self._active_gate = int(obs["target_gate"])
 
@@ -71,8 +69,8 @@ class MyController(Controller):
         # print("\n===== GATE NORMALS DEBUG =====")
         # for i in range(self._n_gates):
         #     rot = R.from_quat(self._gate_quat[i])
-        #     for axis, vec in [("X [1,0,0]", [1,0,0]), 
-        #                       ("Y [0,1,0]", [0,1,0]), 
+        #     for axis, vec in [("X [1,0,0]", [1,0,0]),
+        #                       ("Y [0,1,0]", [0,1,0]),
         #                       ("Z [0,0,1]", [0,0,1])]:
         #         n = rot.apply(vec)
         #         approach = self._gate_pos[i] - 0.4 * n
@@ -96,9 +94,9 @@ class MyController(Controller):
             return np.array([1.0, 0.0, 0.0])
 
         return normal / norm
-    
-    #── Debug-Hilfsmethode: Gate-Info ausgeben ─────────────────────────────────
-    
+
+    # ── Debug-Hilfsmethode: Gate-Info ausgeben ─────────────────────────────────
+
     def print_gate_info(self, drone_pos=None):
         """Prints gate position, normal, approach and exit points."""
         gate_data = []
@@ -110,7 +108,7 @@ class MyController(Controller):
             normal = self._gate_normal(i)
 
             approach = pos - GATE_APPROACH_OFFSET * normal
-            exit_pt  = pos + GATE_EXIT_OFFSET * normal
+            exit_pt = pos + GATE_EXIT_OFFSET * normal
 
             print(f"Gate {i}:")
             print(f"  position : {np.round(pos, 3)}")
@@ -118,17 +116,19 @@ class MyController(Controller):
             print(f"  approach : {np.round(approach, 3)}")
             print(f"  exit     : {np.round(exit_pt, 3)}")
 
-            gate_data.append({
-                "id": i,
-                "position": pos.copy(),
-                "normal": normal.copy(),
-                "approach": approach.copy(),
-                "exit": exit_pt.copy()
-            })
+            gate_data.append(
+                {
+                    "id": i,
+                    "position": pos.copy(),
+                    "normal": normal.copy(),
+                    "approach": approach.copy(),
+                    "exit": exit_pt.copy(),
+                }
+            )
 
         print("=====================\n")
         return gate_data
-    
+
     def _filter_trusted_obstacles(self, obs, pos):
         trusted = []
         pos_xy = pos[:2]
@@ -138,23 +138,24 @@ class MyController(Controller):
         for g in obs["gates_pos"]:
             if np.linalg.norm(g[:2] - pos_xy) < SENSOR_RANGE:
                 trusted.append(g)
-        return np.array(trusted) if len(trusted) > 0 else np.empty((0,3))
+        return np.array(trusted) if len(trusted) > 0 else np.empty((0, 3))
 
     # ── Occupancy Grid ────────────────────────────────────────────────────────
 
     def _world_to_grid(self, xy):
         idx = ((xy - self._grid_origin) / self._grid_res).astype(int)
 
-        if not (0 <= idx[0] < self._grid_shape[0] and
-                0 <= idx[1] < self._grid_shape[1]):
+        if not (0 <= idx[0] < self._grid_shape[0] and 0 <= idx[1] < self._grid_shape[1]):
             return None
 
         return idx
 
-    def _build_occupancy_grid(self, obs: dict, start_pos: np.ndarray, current_gate: int) -> np.ndarray:
+    def _build_occupancy_grid(
+        self, obs: dict, start_pos: np.ndarray, current_gate: int
+    ) -> np.ndarray:
         obstacles = obs["obstacles_pos"]
         # obstacles = self._filter_trusted_obstacles(obs, start_pos)
-        print(f"  [build grid] raw obstacles:\n{np.round(obstacles,3)}")
+        print(f"  [build grid] raw obstacles:\n{np.round(obstacles, 3)}")
 
         WORLD_MARGIN = 5.0
 
@@ -164,8 +165,8 @@ class MyController(Controller):
         max_bounds = np.max(all_points, axis=0) + WORLD_MARGIN
 
         self._grid_origin = min_bounds
-        self._grid_max    = max_bounds
-        self._grid_res    = GRID_RESOLUTION
+        self._grid_max = max_bounds
+        self._grid_res = GRID_RESOLUTION
 
         grid_size = np.ceil((max_bounds - min_bounds) / GRID_RESOLUTION).astype(int)
         self._grid_shape = grid_size
@@ -176,8 +177,8 @@ class MyController(Controller):
         grid_size = np.ceil((max_bounds - min_bounds) / GRID_RESOLUTION).astype(int)
         grid = np.zeros(grid_size, dtype=bool)
 
-        inflate_obs  = max(1, int(OBSTACLE_MARGIN / GRID_RESOLUTION))
-        inflate_gate = max(1, int(GATE_MARGIN     / GRID_RESOLUTION))
+        inflate_obs = max(1, int(OBSTACLE_MARGIN / GRID_RESOLUTION))
+        inflate_gate = max(1, int(GATE_MARGIN / GRID_RESOLUTION))
 
         # ── Physische Hindernisse ─────────────────────────────────────────────
         for obs_pos in obstacles:
@@ -207,7 +208,9 @@ class MyController(Controller):
             normal /= np.linalg.norm(normal) + 1e-9
             perp = np.array([-normal[1], normal[0]])  # entlang Gate-Breite
 
-            for offset in np.linspace(-GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int (GATE_HALF_WIDTH * 100.0)):
+            for offset in np.linspace(
+                -GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int(GATE_HALF_WIDTH * 100.0)
+            ):
                 wall_point = gate_center + offset * perp
                 self._mark_circle(grid, wall_point, inflate_gate, min_bounds)
 
@@ -226,19 +229,18 @@ class MyController(Controller):
         idx = np.clip(idx, 0, np.array(grid.shape) - 1)
         for dx in range(-inflate, inflate + 1):
             for dy in range(-inflate, inflate + 1):
-                if dx*dx + dy*dy > inflate*inflate:
+                if dx * dx + dy * dy > inflate * inflate:
                     continue
                 x, y = idx[0] + dx, idx[1] + dy
                 if 0 <= x < grid.shape[0] and 0 <= y < grid.shape[1]:
                     grid[x, y] = True
-
 
     # we need to unite the attributes of the search alorithms to find a good path
     # without many strict curves whise respecting the occupancy grid
     def _custom_star(self, grid, start, goal, step_length=PATH_STEP_LENGTH, n_samples=8):
 
         start_xy = start[:2].copy()
-        goal_xy  = goal[:2].copy()
+        goal_xy = goal[:2].copy()
 
         def is_occupied(grid, point_xy: np.ndarray) -> bool:
             """Returns True if the world-space XY point falls on an occupied grid cell."""
@@ -246,8 +248,8 @@ class MyController(Controller):
             if idx is None:
                 return True
             return grid[idx[0], idx[1]]
-        
-        def line_clear(grid,a: np.ndarray, b: np.ndarray, n_checks: int = 12) -> bool:
+
+        def line_clear(grid, a: np.ndarray, b: np.ndarray, n_checks: int = 12) -> bool:
             """True if the straight line from a to b has no occupied cells."""
             for t in np.linspace(0.0, 1.0, n_checks):
                 if is_occupied(grid, a + t * (b - a)):
@@ -257,34 +259,33 @@ class MyController(Controller):
         def is_valid_waypoint(grid, p, prev):
             """Point must be free AND reachable in a straight line from prev."""
             return not is_occupied(grid, p) and line_clear(grid, prev, p)
-        
+
         def heuristic(p: np.ndarray) -> float:
             """Euclidean distance to goal — admissible, never overestimates."""
             return float(np.linalg.norm(p - goal_xy))
-        
+
         def circle_candidates(center: np.ndarray) -> np.ndarray:
             """Generate n_samples evenly spaced on a circle around center."""
             angles = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
             # Bias first candidate toward goal direction
             goal_angle = np.arctan2(goal_xy[1] - center[1], goal_xy[0] - center[0])
             angles = angles + goal_angle  # rotate ring so one point aims at goal
-            return np.column_stack([
-                center[0] + step_length * np.cos(angles),
-                center[1] + step_length * np.sin(angles)
-            ])
-        
+            return np.column_stack(
+                [center[0] + step_length * np.cos(angles), center[1] + step_length * np.sin(angles)]
+            )
+
         # ── Node storage ──────────────────────────────────────────────────────────
         # Each node: [x, y]
-        nodes   = [start_xy.copy()]
+        nodes = [start_xy.copy()]
         parents = [-1]
-        g_costs = [0.0]                          # cost from start
+        g_costs = [0.0]  # cost from start
 
         # Open set: (f_cost, node_index)
         open_set = []
         heapq.heappush(open_set, (heuristic(start_xy), 0))
-        visited  = set()
+        visited = set()
 
-        best_goal_idx  = -1
+        best_goal_idx = -1
         best_goal_cost = np.inf
 
         # ── Main loop ─────────────────────────────────────────────────────────────
@@ -292,7 +293,7 @@ class MyController(Controller):
         dist_to_goal = np.linalg.norm(start_xy - goal_xy)
         if dist_to_goal < step_length * 1.5 and line_clear(grid, start_xy, goal_xy):
             return np.array([start_xy, goal_xy])  # already close, just go straight
-        
+
         max_iterations = 2 * int(np.linalg.norm(start_xy - goal_xy) / step_length)
         iteration = 0
         for iteration in range(max_iterations):
@@ -306,8 +307,8 @@ class MyController(Controller):
                 continue
             visited.add(current_idx)
 
-            current_pos  = nodes[current_idx]
-            current_g    = g_costs[current_idx]
+            current_pos = nodes[current_idx]
+            current_g = g_costs[current_idx]
 
             # ── Early exit if we reached the goal ────────────────────────────────
             if np.linalg.norm(current_pos - goal_xy) < step_length:
@@ -361,7 +362,7 @@ class MyController(Controller):
                 if f_new < best_goal_cost and np.linalg.norm(pt - goal_xy) < step_length * 2:
                     if line_clear(grid, pt, goal_xy):
                         best_goal_cost = f_new
-                        best_goal_idx  = new_idx
+                        best_goal_idx = new_idx
 
         # ── Reconstruct path ──────────────────────────────────────────────────────
         if best_goal_idx < 0:
@@ -372,7 +373,7 @@ class MyController(Controller):
             #       f"closest dist={dists[best_goal_idx]:.3f}m")
 
         path = []
-        idx  = best_goal_idx
+        idx = best_goal_idx
         while idx != -1:
             path.append(nodes[idx])
             idx = parents[idx]
@@ -388,12 +389,7 @@ class MyController(Controller):
         #       f"iters={iteration+1}")
         return path
 
-
-        
-        
-
     # ── Spline bauen ──────────────────────────────────────────────────────────
-
 
     def _gate_waypoints(self, gate_id: int, prev_pos: np.ndarray):
         # center = self._gate_pos[gate_id].copy()
@@ -409,17 +405,15 @@ class MyController(Controller):
             center = gate
             center_xy = center[:2]
 
-        
-
         # Zwei Seiten des Gates
         approach_xy = center_xy - normal * GATE_APPROACH_OFFSET
         exit_xy = center_xy + normal * GATE_APPROACH_OFFSET
 
         approach = np.array([approach_xy[0], approach_xy[1], center[2]])
-        exit_pt  = np.array([exit_xy[0],     exit_xy[1],     center[2]])
+        exit_pt = np.array([exit_xy[0], exit_xy[1], center[2]])
 
         return approach, center, exit_pt
-    
+
     def _obstacles_changed(self, obs, pos):
         current = self._filter_trusted_obstacles(obs, pos)
 
@@ -456,11 +450,10 @@ class MyController(Controller):
 
         from_pos = start_pos
 
-
         # DEBUG
         # print(f"  [waypoint debug] gate_id={gate_id} from_pos={np.round(from_pos[:2],3)}")
-        
-        #DEFINE GATE WAYPOINTS
+
+        # DEFINE GATE WAYPOINTS
         approach, center, exit_pt = self._gate_waypoints(gate_id, from_pos)
         # Baue Occupancy Grid und finde Pfad von aktueller Position zum approach point
         grid = self._build_occupancy_grid(obs, start_pos, gate_id)
@@ -494,11 +487,13 @@ class MyController(Controller):
         path_z_3 = np.linspace(center[2], exit_pt[2], len(path_xy_3))
         path_3 = np.column_stack([path_xy_3, path_z_3])
 
-        waypoints = np.vstack([
-        np.array(path_1),
-        np.array(path_2)[1:],  # remove duplicate approach point
-        np.array(path_3)[1:],   
-        ])
+        waypoints = np.vstack(
+            [
+                np.array(path_1),
+                np.array(path_2)[1:],  # remove duplicate approach point
+                np.array(path_3)[1:],
+            ]
+        )
 
         waypoints[0] = start_pos.copy()
 
@@ -538,8 +533,8 @@ class MyController(Controller):
         rebuild = False
         for i in range(self._n_gates):
             if new_visited[i] and not self._gates_visited[i]:
-                self._gate_pos[i]    = obs["gates_pos"][i]
-                self._gate_quat[i]   = obs["gates_quat"][i]
+                self._gate_pos[i] = obs["gates_pos"][i]
+                self._gate_quat[i] = obs["gates_quat"][i]
                 self._gates_visited[i] = True
                 rebuild = True
                 print(f"  [gate update] gate {i} now visited")
@@ -552,8 +547,8 @@ class MyController(Controller):
 
         pos = obs["pos"]
         vel = obs["vel"]
-        t   = self._tick / self._freq
-        dt  = 1.0 / self._freq
+        t = self._tick / self._freq
+        dt = 1.0 / self._freq
 
         # we want the gate only to update after exit
         # current_gate = int(obs["target_gate"])
@@ -562,16 +557,28 @@ class MyController(Controller):
 
         # ── Phase 1: Takeoff ──────────────────────────────────────────────────
         if t < TAKEOFF_TIME:
-            frac      = t / TAKEOFF_TIME
-            target_z  = TAKEOFF_HEIGHT * frac
+            frac = t / TAKEOFF_TIME
+            target_z = TAKEOFF_HEIGHT * frac
             des_vel_z = TAKEOFF_HEIGHT / TAKEOFF_TIME
-            acc_z     = 3.0 * (target_z - pos[2]) + 1.5 * (des_vel_z - vel[2])
-            return np.array([
-                pos[0], pos[1], target_z,
-                0.0, 0.0, des_vel_z,
-                0.0, 0.0, float(np.clip(acc_z, -10, 10)),
-                0.0, 0.0, 0.0, 0.0
-            ], dtype=np.float32)
+            acc_z = 3.0 * (target_z - pos[2]) + 1.5 * (des_vel_z - vel[2])
+            return np.array(
+                [
+                    pos[0],
+                    pos[1],
+                    target_z,
+                    0.0,
+                    0.0,
+                    des_vel_z,
+                    0.0,
+                    0.0,
+                    float(np.clip(acc_z, -10, 10)),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                dtype=np.float32,
+            )
 
         # ── Phase 2: Spline initialisieren ────────────────────────────────────
         if self._spline is None:
@@ -592,9 +599,9 @@ class MyController(Controller):
             if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
                 print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
                 self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="obstacle_change")
-        #Thats it, we keep following the current spline
+        # Thats it, we keep following the current spline
 
-        t_sp    = min(t_elapsed, self._t_total)
+        t_sp = min(t_elapsed, self._t_total)
         des_pos = self._spline(t_sp)
         des_vel = self._spline_vel(t_sp)
         des_vel = np.clip(des_vel, -1.0, 1.0)
@@ -614,9 +621,9 @@ class MyController(Controller):
         if dist_to_gate < GATE_PROXIMITY_THRESHOLD:
             print(f"  Near gate (dist={dist_to_gate:.2f}), using more conservative PID gains")
             # Near gate: tighter proportional, moderate integral
-            kp = np.array([3.0, 3.0, 2.0])   # restore XY tracking strength
+            kp = np.array([3.0, 3.0, 2.0])  # restore XY tracking strength
             kd = np.array([3.0, 3.0, 1.5])
-            ki = np.array([1.0, 1.0, 0.5])   # reduce integral near gate to avoid windup
+            ki = np.array([1.0, 1.0, 0.5])  # reduce integral near gate to avoid windup
         else:
             kp = np.array([4.0, 4.0, 3.0])
             kd = np.array([2.0, 2.0, 1.5])
@@ -638,33 +645,46 @@ class MyController(Controller):
         # print("vz:", vel[2])
 
         self._pos_integral += pos_error * dt
-        self._pos_integral  = np.clip(self._pos_integral, -0.5, 0.5)
+        self._pos_integral = np.clip(self._pos_integral, -0.5, 0.5)
 
         acc = kp_new * pos_error + kd_new * vel_error + ki_new * self._pos_integral
         # print(f"  [PID debug] pos_error={np.round(pos_error,3)} vel_error={np.round(vel_error,3)} acc={np.round(acc,3)}")
         acc[:2] = np.clip(acc[:2], -2.0, 2.0)
-        acc[2]  = np.clip(acc[2], -2.0, 2.0)
+        acc[2] = np.clip(acc[2], -2.0, 2.0)
 
         # print(f"des_z={des_pos[2]:.2f}, actual_z={pos[2]:.2f}")
         # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)}, acc={np.round(acc,3)}")
 
         target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
-        delta      = target_pos - pos
+        delta = target_pos - pos
 
-        des_yaw    = float(np.arctan2(delta[1], delta[0]))
+        des_yaw = float(np.arctan2(delta[1], delta[0]))
 
         if self._tick % 20 == 0:
-            print(f"  [t={t:.2f}] gate={self._active_gate} "
-            f"pos={np.round(pos,3)} des={np.round(des_pos,3)} "
-            f"err={np.round(pos-des_pos,3)}")
+            print(
+                f"  [t={t:.2f}] gate={self._active_gate} "
+                f"pos={np.round(pos, 3)} des={np.round(des_pos, 3)} "
+                f"err={np.round(pos - des_pos, 3)}"
+            )
 
-        return np.array([
-            des_pos[0], des_pos[1], des_pos[2],
-            des_vel[0], des_vel[1], des_vel[2],
-            acc[0],     acc[1],     acc[2],
-            des_yaw,
-            0.0, 0.0, 0.0
-        ], dtype=np.float32)
+        return np.array(
+            [
+                des_pos[0],
+                des_pos[1],
+                des_pos[2],
+                des_vel[0],
+                des_vel[1],
+                des_vel[2],
+                acc[0],
+                acc[1],
+                acc[2],
+                des_yaw,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float32,
+        )
 
     def step_callback(self, action, obs, reward, terminated, truncated, info) -> bool:
         self._tick += 1
@@ -691,7 +711,6 @@ class MyController(Controller):
 
             print("============================\n")
 
-
         if terminated:
             print("\n💥 ===== CRASH DETECTED =====")
 
@@ -714,18 +733,20 @@ class MyController(Controller):
                 print(f"dist_to_exit: {dist_exit:.3f}")
 
             trusted_obsactles = self._filter_trusted_obstacles(obs, obs["pos"])
-            print(f"trusted obstacles (in sensor range {SENSOR_RANGE}m):\n{np.round(trusted_obsactles,3)}")
+            print(
+                f"trusted obstacles (in sensor range {SENSOR_RANGE}m):\n{np.round(trusted_obsactles, 3)}"
+            )
 
             print("============================\n")
 
         return terminated or truncated
 
     def episode_callback(self):
-        self._tick           = 0
-        self._spline         = None
-        self._spline_vel     = None
-        self._t_total        = 0.0
-        self._t_start_tick   = 0
-        self._pos_integral   = np.zeros(3)
-        self._current_goal   = None
+        self._tick = 0
+        self._spline = None
+        self._spline_vel = None
+        self._t_total = 0.0
+        self._t_start_tick = 0
+        self._pos_integral = np.zeros(3)
+        self._current_goal = None
         self._prev_target_gate = 0
