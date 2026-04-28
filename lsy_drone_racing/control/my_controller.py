@@ -5,7 +5,12 @@ from __future__ import annotations
 import heapq
 
 import numpy as np
-from numpy.typing import NDArray
+from typing import TYPE_CHECKING
+
+from typing import Any
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation as R
 
@@ -97,37 +102,37 @@ class MyController(Controller):
 
     # ── Debug-Hilfsmethode: Gate-Info ausgeben ─────────────────────────────────
 
-    def print_gate_info(self, drone_pos=None):
-        """Prints gate position, normal, approach and exit points."""
-        gate_data = []
+    # def print_gate_info(self, drone_pos=None):
+    #     """Prints gate position, normal, approach and exit points."""
+    #     gate_data = []
 
-        print("\n===== GATE INFO =====")
-        for i in range(self._n_gates):
-            pos = self._gate_pos[i]
+    #     print("\n===== GATE INFO =====")
+    #     for i in range(self._n_gates):
+    #         pos = self._gate_pos[i]
 
-            normal = self._gate_normal(i)
+    #         normal = self._gate_normal(i)
 
-            approach = pos - GATE_APPROACH_OFFSET * normal
-            exit_pt = pos + GATE_EXIT_OFFSET * normal
+    #         approach = pos - GATE_APPROACH_OFFSET * normal
+    #         exit_pt = pos + GATE_EXIT_OFFSET * normal
 
-            print(f"Gate {i}:")
-            print(f"  position : {np.round(pos, 3)}")
-            print(f"  normal   : {np.round(normal, 3)}")
-            print(f"  approach : {np.round(approach, 3)}")
-            print(f"  exit     : {np.round(exit_pt, 3)}")
+    #         print(f"Gate {i}:")
+    #         print(f"  position : {np.round(pos, 3)}")
+    #         print(f"  normal   : {np.round(normal, 3)}")
+    #         print(f"  approach : {np.round(approach, 3)}")
+    #         print(f"  exit     : {np.round(exit_pt, 3)}")
 
-            gate_data.append(
-                {
-                    "id": i,
-                    "position": pos.copy(),
-                    "normal": normal.copy(),
-                    "approach": approach.copy(),
-                    "exit": exit_pt.copy(),
-                }
-            )
+    #         gate_data.append(
+    #             {
+    #                 "id": i,
+    #                 "position": pos.copy(),
+    #                 "normal": normal.copy(),
+    #                 "approach": approach.copy(),
+    #                 "exit": exit_pt.copy(),
+    #             }
+    #         )
 
-        print("=====================\n")
-        return gate_data
+    #     print("=====================\n")
+    #     return gate_data
 
     def _filter_trusted_obstacles(self, obs, pos):
         trusted = []
@@ -289,7 +294,8 @@ class MyController(Controller):
         best_goal_cost = np.inf
 
         # ── Main loop ─────────────────────────────────────────────────────────────
-        # iterate for maximum double the path length to goal in steps, to avoid infinite loops in complex scenarios
+        # iterate for maximum double the path length to goal in steps,
+        # to avoid infinite loops in complex scenarios
         dist_to_goal = np.linalg.norm(start_xy - goal_xy)
         if dist_to_goal < step_length * 1.5 and line_clear(grid, start_xy, goal_xy):
             return np.array([start_xy, goal_xy])  # already close, just go straight
@@ -347,7 +353,8 @@ class MyController(Controller):
                 # Snap-check: don't add a point too close to an existing node
                 too_close = any(
                     np.linalg.norm(pt - nodes[i]) < step_length * 0.4
-                    for i in range(max(0, len(nodes) - 30), len(nodes))  # check recent nodes only
+                    for i in range(max(0, len(nodes) - 30), len(nodes))
+                    # check recent nodes only
                 )
                 if too_close:
                     continue
@@ -445,7 +452,7 @@ class MyController(Controller):
     def _build_spline(self, start_pos, gate_id, obs, label=""):
 
         # Debug: Gate-Info ausgeben
-        self.print_gate_info(drone_pos=start_pos)
+        # self.print_gate_info(drone_pos=start_pos)
         self._pos_integral[:] = 0.0
 
         from_pos = start_pos
@@ -544,6 +551,7 @@ class MyController(Controller):
     def compute_control(
         self, obs: dict[str, NDArray[np.floating]], info: dict | None = None
     ) -> NDArray[np.floating]:
+        """Compute control command."""
 
         pos = obs["pos"]
         vel = obs["vel"]
@@ -629,12 +637,6 @@ class MyController(Controller):
             kd = np.array([2.0, 2.0, 1.5])
             ki = np.array([2.0, 2.0, 1.0])
 
-        scale = 3.0 / TIME_SCALE  # reference is your old stable value, 3.0 was stable
-
-        # kp_new = kp * scale**2
-        # kd_new = kd * scale**2
-        # ki_new = ki * scale**2
-
         kp_new = kp
         kd_new = kd
         ki_new = ki
@@ -648,12 +650,14 @@ class MyController(Controller):
         self._pos_integral = np.clip(self._pos_integral, -0.5, 0.5)
 
         acc = kp_new * pos_error + kd_new * vel_error + ki_new * self._pos_integral
-        # print(f"  [PID debug] pos_error={np.round(pos_error,3)} vel_error={np.round(vel_error,3)} acc={np.round(acc,3)}")
+        # print(f"  [PID debug] pos_error={np.round(pos_error,3)}
+        # vel_error={np.round(vel_error,3)} acc={np.round(acc,3)}")
         acc[:2] = np.clip(acc[:2], -2.0, 2.0)
         acc[2] = np.clip(acc[2], -2.0, 2.0)
 
         # print(f"des_z={des_pos[2]:.2f}, actual_z={pos[2]:.2f}")
-        # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)}, acc={np.round(acc,3)}")
+        # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)},
+        # acc={np.round(acc,3)}")
 
         target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
         delta = target_pos - pos
@@ -687,6 +691,7 @@ class MyController(Controller):
         )
 
     def step_callback(self, action, obs, reward, terminated, truncated, info) -> bool:
+        """Step callback."""
         self._tick += 1
         if truncated:
             print("\n ===== TIMEOUT DETECTED =====")
@@ -742,6 +747,7 @@ class MyController(Controller):
         return terminated or truncated
 
     def episode_callback(self):
+        """Episode reset."""
         self._tick = 0
         self._spline = None
         self._spline_vel = None
