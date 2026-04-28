@@ -4,6 +4,7 @@
 submission.csv
 logs
 *.log
+*.png
 secrets
 **/*.secret
 saves

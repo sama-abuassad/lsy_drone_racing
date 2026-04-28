@@ -9,13 +9,13 @@ from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation as R
 from lsy_drone_racing.control import Controller
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
-import sys
-sys.stdout = open("output.log", "w")
+# import sys
+# sys.stdout = open("output.log", "w")
 
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
+# if TYPE_CHECKING:
+#     from numpy.typing import NDArray
 
 TAKEOFF_HEIGHT = 0.5
 TAKEOFF_TIME   = 1.0
@@ -211,12 +211,12 @@ class MyController(Controller):
                 wall_point = gate_center + offset * perp
                 self._mark_circle(grid, wall_point, inflate_gate, min_bounds)
 
-        # Speichert das Grid als Bild ab, damit du siehst, was A* sieht
-        plt.imshow(grid.T, origin='lower', extent=[min_bounds[0], max_bounds[0], min_bounds[1], max_bounds[1]])
-        plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5) # Hindernisse einzeichnen
-        plt.title("Occupancy Grid Debug")
-        plt.savefig("grid_debug.png")
-        plt.close()
+        # # Speichert das Grid als Bild ab, damit du siehst, was A* sieht
+        # plt.imshow(grid.T, origin='lower', extent=[min_bounds[0], max_bounds[0], min_bounds[1], max_bounds[1]])
+        # plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5) # Hindernisse einzeichnen
+        # plt.title("Occupancy Grid Debug")
+        # plt.savefig("grid_debug.png")
+        # plt.close()
 
         return grid
 
@@ -368,8 +368,8 @@ class MyController(Controller):
             # No path reached goal — return closest node to goal
             dists = [np.linalg.norm(n - goal_xy) for n in nodes]
             best_goal_idx = int(np.argmin(dists))
-            print(f"  [custom_star] WARNING: goal not reached, "
-                  f"closest dist={dists[best_goal_idx]:.3f}m")
+            # print(f"  [custom_star] WARNING: goal not reached, "
+            #       f"closest dist={dists[best_goal_idx]:.3f}m")
 
         path = []
         idx  = best_goal_idx
@@ -383,9 +383,9 @@ class MyController(Controller):
             path.append(goal_xy.copy())
 
         path = np.array(path)
-        print(f"  [custom_star] {len(nodes)} nodes expanded, "
-              f"path={len(path)} pts, "
-              f"iters={iteration+1}")
+        # print(f"  [custom_star] {len(nodes)} nodes expanded, "
+        #       f"path={len(path)} pts, "
+        #       f"iters={iteration+1}")
         return path
 
 
@@ -458,7 +458,7 @@ class MyController(Controller):
 
 
         # DEBUG
-        print(f"  [waypoint debug] gate_id={gate_id} from_pos={np.round(from_pos[:2],3)}")
+        # print(f"  [waypoint debug] gate_id={gate_id} from_pos={np.round(from_pos[:2],3)}")
         
         #DEFINE GATE WAYPOINTS
         approach, center, exit_pt = self._gate_waypoints(gate_id, from_pos)
