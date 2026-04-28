@@ -6,7 +6,8 @@ from __future__ import annotations
 
 # Standard library
 import heapq
-import sys
+
+# import sys
 from typing import TYPE_CHECKING, Any
 
 # Third-party
@@ -219,14 +220,15 @@ class MyController(Controller):
             perp = np.array([-normal[1], normal[0]])  # entlang Gate-Breite
 
             for offset in np.linspace(
-            -GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int(GATE_HALF_WIDTH * 100.0)):
+                -GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int(GATE_HALF_WIDTH * 100.0)
+            ):
                 wall_point = gate_center + offset * perp
                 self._mark_circle(grid, wall_point, inflate_gate, min_bounds)
 
         # # Speichert das Grid als Bild ab, damit du siehst, was A* sieht
-        # plt.imshow(grid.T, origin='lower', extent=[min_bounds[0], 
+        # plt.imshow(grid.T, origin='lower', extent=[min_bounds[0],
         # max_bounds[0], min_bounds[1], max_bounds[1]])
-        # plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5) 
+        # plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5)
         # # Hindernisse einzeichnen
         # plt.title("Occupancy Grid Debug")
         # plt.savefig("grid_debug.png")
@@ -234,8 +236,9 @@ class MyController(Controller):
 
         return grid
 
-    def _mark_circle(self, grid: np.ndarray, xy: np.ndarray, 
-                     inflate: int, min_bounds: np.ndarray) -> None:
+    def _mark_circle(
+        self, grid: np.ndarray, xy: np.ndarray, inflate: int, min_bounds: np.ndarray
+    ) -> None:
         """Markiert einen Kreis im 2D-Grid."""
         idx = ((xy - min_bounds) / self._grid_res).astype(int)
         idx = np.clip(idx, 0, np.array(grid.shape) - 1)
@@ -249,9 +252,14 @@ class MyController(Controller):
 
     # we need to unite the attributes of the search alorithms to find a good path
     # without many strict curves whise respecting the occupancy grid
-    def _custom_star(self, grid: np.ndarray, start: np.ndarray, 
-                     goal: np.ndarray, step_length: float = PATH_STEP_LENGTH, 
-                     n_samples: int = 8) -> Any:
+    def _custom_star(
+        self,
+        grid: np.ndarray,
+        start: np.ndarray,
+        goal: np.ndarray,
+        step_length: float = PATH_STEP_LENGTH,
+        n_samples: int = 8,
+    ) -> Any:
 
         start_xy = start[:2].copy()
         goal_xy = goal[:2].copy()
@@ -285,8 +293,7 @@ class MyController(Controller):
             goal_angle = np.arctan2(goal_xy[1] - center[1], goal_xy[0] - center[0])
             angles = angles + goal_angle  # rotate ring so one point aims at goal
             return np.column_stack(
-                [center[0] + step_length * np.cos(angles), 
-                 center[1] + step_length * np.sin(angles)]
+                [center[0] + step_length * np.cos(angles), center[1] + step_length * np.sin(angles)]
             )
 
         # ── Node storage ──────────────────────────────────────────────────────────
@@ -459,8 +466,9 @@ class MyController(Controller):
 
         return False
 
-    def _build_spline(self, start_pos: np.ndarray, gate_id: int, 
-                      obs: dict, label: str = "") -> None:
+    def _build_spline(
+        self, start_pos: np.ndarray, gate_id: int, obs: dict, label: str = ""
+    ) -> None:
 
         # Debug: Gate-Info ausgeben
         # self.print_gate_info(drone_pos=start_pos)
@@ -700,8 +708,15 @@ class MyController(Controller):
             dtype=np.float32,
         )
 
-    def step_callback(self, action: np.ndarray, obs: dict, reward: float,
-                    terminated: bool, truncated: bool, info: dict) -> bool:
+    def step_callback(
+        self,
+        action: np.ndarray,
+        obs: dict,
+        reward: float,
+        terminated: bool,
+        truncated: bool,
+        info: dict,
+    ) -> bool:
         """Step callback."""
         self._tick += 1
         if truncated:
@@ -748,7 +763,7 @@ class MyController(Controller):
                 dist_exit = np.linalg.norm(obs["pos"] - self._current_exit)
                 print(f"dist_to_exit: {dist_exit:.3f}")
 
-            trusted_obsactles = self._filter_trusted_obstacles(obs, obs["pos"])
+            # trusted_obsactles = self._filter_trusted_obstacles(obs, obs["pos"])
             # print(
             #     f"""trusted obstacles (in sensor range {SENSOR_RANGE}m):\n
             #     {np.round(trusted_obsactles, 3)}"""
