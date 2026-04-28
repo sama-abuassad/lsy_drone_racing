@@ -1,20 +1,25 @@
 """Gate-traversing state controller – fixed gate normal, subgoal logic, obstacle inflation."""
 
+# ruff: noqa: ANN001, ANN201, ANN202
+
 from __future__ import annotations
 
+# Standard library
 import heapq
+import sys
+from typing import TYPE_CHECKING, Any
 
+# Third-party
 import numpy as np
-from typing import TYPE_CHECKING
-
-from typing import Any
-
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
 from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation as R
 
+# Local
 from lsy_drone_racing.control import Controller
+
+# Type checking only
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 TAKEOFF_HEIGHT = 0.5
 TAKEOFF_TIME = 1.0
@@ -134,7 +139,7 @@ class MyController(Controller):
     #     print("=====================\n")
     #     return gate_data
 
-    def _filter_trusted_obstacles(self, obs, pos: Any) -> np.ndarray:
+    def _filter_trusted_obstacles(self, obs: dict, pos: Any) -> np.ndarray:
         trusted = []
         pos_xy = pos[:2]
         for o in obs["obstacles_pos"]:
@@ -214,21 +219,23 @@ class MyController(Controller):
             perp = np.array([-normal[1], normal[0]])  # entlang Gate-Breite
 
             for offset in np.linspace(
-                -GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int(GATE_HALF_WIDTH * 100.0)
-            ):
+            -GATE_HALF_WIDTH, GATE_HALF_WIDTH, num=int(GATE_HALF_WIDTH * 100.0)):
                 wall_point = gate_center + offset * perp
                 self._mark_circle(grid, wall_point, inflate_gate, min_bounds)
 
         # # Speichert das Grid als Bild ab, damit du siehst, was A* sieht
-        # plt.imshow(grid.T, origin='lower', extent=[min_bounds[0], max_bounds[0], min_bounds[1], max_bounds[1]])
-        # plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5) # Hindernisse einzeichnen
+        # plt.imshow(grid.T, origin='lower', extent=[min_bounds[0], 
+        # max_bounds[0], min_bounds[1], max_bounds[1]])
+        # plt.scatter(obstacles[:, 0], obstacles[:, 1], color='red', s=5) 
+        # # Hindernisse einzeichnen
         # plt.title("Occupancy Grid Debug")
         # plt.savefig("grid_debug.png")
         # plt.close()
 
         return grid
 
-    def _mark_circle(self, grid, xy, inflate, min_bounds) -> None:
+    def _mark_circle(self, grid: np.ndarray, xy: np.ndarray, 
+                     inflate: int, min_bounds: np.ndarray) -> None:
         """Markiert einen Kreis im 2D-Grid."""
         idx = ((xy - min_bounds) / self._grid_res).astype(int)
         idx = np.clip(idx, 0, np.array(grid.shape) - 1)
@@ -242,26 +249,28 @@ class MyController(Controller):
 
     # we need to unite the attributes of the search alorithms to find a good path
     # without many strict curves whise respecting the occupancy grid
-    def _custom_star(self, grid, start, goal, step_length=PATH_STEP_LENGTH, n_samples=8) -> Any:
+    def _custom_star(self, grid: np.ndarray, start: np.ndarray, 
+                     goal: np.ndarray, step_length: float = PATH_STEP_LENGTH, 
+                     n_samples: int = 8) -> Any:
 
         start_xy = start[:2].copy()
         goal_xy = goal[:2].copy()
 
-        def is_occupied(grid, point_xy: np.ndarray) -> bool:
+        def is_occupied(grid: np.ndarray, point_xy: np.ndarray) -> bool:
             """Returns True if the world-space XY point falls on an occupied grid cell."""
             idx = self._world_to_grid(point_xy)
             if idx is None:
                 return True
             return grid[idx[0], idx[1]]
 
-        def line_clear(grid, a: np.ndarray, b: np.ndarray, n_checks: int = 12) -> bool:
+        def line_clear(grid: np.ndarray, a: np.ndarray, b: np.ndarray, n_checks: int = 12) -> bool:
             """True if the straight line from a to b has no occupied cells."""
             for t in np.linspace(0.0, 1.0, n_checks):
                 if is_occupied(grid, a + t * (b - a)):
                     return False
             return True
 
-        def is_valid_waypoint(grid, p, prev) -> bool:
+        def is_valid_waypoint(grid: np.ndarray, p: np.ndarray, prev: np.ndarray) -> bool:
             """Point must be free AND reachable in a straight line from prev."""
             return not is_occupied(grid, p) and line_clear(grid, prev, p)
 
@@ -276,7 +285,8 @@ class MyController(Controller):
             goal_angle = np.arctan2(goal_xy[1] - center[1], goal_xy[0] - center[0])
             angles = angles + goal_angle  # rotate ring so one point aims at goal
             return np.column_stack(
-                [center[0] + step_length * np.cos(angles), center[1] + step_length * np.sin(angles)]
+                [center[0] + step_length * np.cos(angles), 
+                 center[1] + step_length * np.sin(angles)]
             )
 
         # ── Node storage ──────────────────────────────────────────────────────────
@@ -398,7 +408,7 @@ class MyController(Controller):
 
     # ── Spline bauen ──────────────────────────────────────────────────────────
 
-    def _gate_waypoints(self, gate_id: int, prev_pos: np.ndarray):
+    def _gate_waypoints(self, gate_id: int, prev_pos: np.ndarray) -> Any:
         # center = self._gate_pos[gate_id].copy()
         gate = self._gate_pos[gate_id]
         dist_to_gate = np.linalg.norm(prev_pos - gate)
@@ -421,7 +431,7 @@ class MyController(Controller):
 
         return approach, center, exit_pt
 
-    def _obstacles_changed(self, obs, pos):
+    def _obstacles_changed(self, obs: dict, pos: np.ndarray) -> bool:
         current = self._filter_trusted_obstacles(obs, pos)
 
         # print(f"  [obstacle check] current trusted obstacles:\n{np.round(current,3)}")
@@ -449,7 +459,8 @@ class MyController(Controller):
 
         return False
 
-    def _build_spline(self, start_pos, gate_id, obs, label="") -> None:
+    def _build_spline(self, start_pos: np.ndarray, gate_id: int, 
+                      obs: dict, label: str = "") -> None:
 
         # Debug: Gate-Info ausgeben
         # self.print_gate_info(drone_pos=start_pos)
@@ -474,7 +485,7 @@ class MyController(Controller):
         self._current_exit = exit_pt.copy()
 
         # Doppelte Punkte entfernen (können durch approach/center/exit Einfügung entstehen)
-        def remove_duplicate_points(xy, eps=1e-3) -> np.ndarray:
+        def remove_duplicate_points(xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
             filtered = [xy[0]]
             for p in xy[1:]:
                 if np.linalg.norm(p - filtered[-1]) > eps:
@@ -552,7 +563,6 @@ class MyController(Controller):
         self, obs: dict[str, NDArray[np.floating]], info: dict | None = None
     ) -> NDArray[np.floating]:
         """Compute control command."""
-
         pos = obs["pos"]
         vel = obs["vel"]
         t = self._tick / self._freq
@@ -690,7 +700,8 @@ class MyController(Controller):
             dtype=np.float32,
         )
 
-    def step_callback(self, action, obs, reward, terminated, truncated, info) -> bool:
+    def step_callback(self, action: np.ndarray, obs: dict, reward: float,
+                    terminated: bool, truncated: bool, info: dict) -> bool:
         """Step callback."""
         self._tick += 1
         if truncated:
@@ -738,9 +749,10 @@ class MyController(Controller):
                 print(f"dist_to_exit: {dist_exit:.3f}")
 
             trusted_obsactles = self._filter_trusted_obstacles(obs, obs["pos"])
-            print(
-                f"trusted obstacles (in sensor range {SENSOR_RANGE}m):\n{np.round(trusted_obsactles, 3)}"
-            )
+            # print(
+            #     f"""trusted obstacles (in sensor range {SENSOR_RANGE}m):\n
+            #     {np.round(trusted_obsactles, 3)}"""
+            # )
 
             print("============================\n")
 
