@@ -260,7 +260,6 @@ class MyController(Controller):
         step_length: float = PATH_STEP_LENGTH,
         n_samples: int = 8,
     ) -> Any:
-
         start_xy = start[:2].copy()
         goal_xy = goal[:2].copy()
 
@@ -469,7 +468,6 @@ class MyController(Controller):
     def _build_spline(
         self, start_pos: np.ndarray, gate_id: int, obs: dict, label: str = ""
     ) -> None:
-
         # Debug: Gate-Info ausgeben
         # self.print_gate_info(drone_pos=start_pos)
         self._pos_integral[:] = 0.0
@@ -786,4 +784,4 @@ class MyController(Controller):
 
     # adding comments so i have changes everytime i have to repush
     # 2$LSY
-    #3
+    # 3
