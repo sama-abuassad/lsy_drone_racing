@@ -22,11 +22,18 @@ from lsy_drone_racing.control import Controller
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
+# output debug info to a file, so we can analyze it after 
+
+import sys
+
+# Open a file and redirect print output
+sys.stdout = open("output.log", "w")
+
 
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET = 0.2  # m vor dem Gate-Zentrum
-GATE_EXIT_OFFSET = 0.1  # m hinter dem Gate-Zentrum
+GATE_EXIT_OFFSET = 0.7  # m hinter dem Gate-Zentrum - minimal double GATE_MARGIN
 OBSTACLE_MARGIN = 0.15  # physischer Radius der Hindernisse (m)
 GRID_RESOLUTION = 0.03  # Hindernisauflösung (m)
 APPROACH_THRESHOLD = 0.20  # m – wann gilt Approach als erreicht?
@@ -38,7 +45,7 @@ GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate 
 SENSOR_RANGE = 0.7  # m – 100 for level 0,1, 0.7 für level 2
 PATH_STEP_LENGTH = 0.2  # m – Abstand der Wegpunkte im Pfadplaner
 TIMEOUT_REPLAN =  0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
-TAKEOFF_TIME = 1.0  # s – Dauer des Takeoffs
+TAKEOFF_TIME = 0.2  # s – Dauer des Takeoffs
 TAKEOFF_HEIGHT = 0.5  # m – Zielhöhe des Takeoffs
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -429,7 +436,7 @@ class MyController(Controller):
 
         # Zwei Seiten des Gates
         approach_xy = center_xy - normal * GATE_APPROACH_OFFSET
-        exit_xy = center_xy + normal * GATE_APPROACH_OFFSET
+        exit_xy = center_xy + normal * GATE_EXIT_OFFSET
 
         approach = np.array([approach_xy[0], approach_xy[1], center[2]])
         exit_pt = np.array([exit_xy[0], exit_xy[1], center[2]])
@@ -493,12 +500,12 @@ class MyController(Controller):
             approach, center, exit_pt = self._gate_waypoints(id, from_pos)
             # Baue Occupancy Grid und finde Pfad von aktueller Position zum approach point
             grid = self._build_occupancy_grid(obs, from_pos, id)
-            path_xy_1 = self._custom_star(grid, from_pos[:2], approach[:2], step_length=0.2)
+            path_xy_1 = self._custom_star(grid, from_pos[:2], approach[:2], step_length=PATH_STEP_LENGTH)
             if path_xy_1 is None:
                 # print("  [WARNING] No path found to approach point! Using direct line.")
                 path_xy_1 = np.array([from_pos[:2], approach[:2]])
-            path_xy_2 = self._custom_star(grid, approach[:2], center[:2], step_length=0.2)
-            path_xy_3 = self._custom_star(grid, center[:2], exit_pt[:2], step_length=0.2)
+            path_xy_2 = self._custom_star(grid, approach[:2], center[:2], step_length=PATH_STEP_LENGTH)
+            path_xy_3 = self._custom_star(grid, center[:2], exit_pt[:2], step_length=PATH_STEP_LENGTH)
 
             # Doppelte Punkte entfernen (können durch approach/center/exit Einfügung entstehen)
             def remove_duplicate_points(xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
@@ -648,19 +655,25 @@ class MyController(Controller):
         # Timeout - Ende der spline reached, update auf Zielgate
         t_elapsed = (self._tick - self._t_start_tick) / self._freq
         if t_elapsed > self._t_total + TIMEOUT_REPLAN:
-            # print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
+            print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="timeout")
         # Dynamische Hindernisse haben sich geändert und weg von gate entfernt, also replannen
         elif self._obstacles_changed(obs, pos):
             if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
-                # print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
+                print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
                 self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="obstacle_change")
         # now we want to replan at exit to make sure our route makes sense
-        elif (dist_to_exit < GATE_EXIT_OFFSET) and (obs_target_gate > self._active_gate):
-            # print(f"\n>>> Approaching exit, replanning for next gate at tick={self._tick}, t={t:.3f}")
+        elif ((dist_to_exit < (0.5 * GATE_EXIT_OFFSET)) and (obs_target_gate > self._active_gate)):
+            print(f"\n>>> Approaching exit, replanning for next gate at tick={self._tick}, t={t:.3f}")
+            print(f"  dist_to_exit={dist_to_exit:.3f}, dist_to_gate={dist_to_gate:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="approach_exit")
+        # replan on target switch 
+        # elif obs_target_gate != self._active_gate:
+        #     print(f"\n>>> Target gate changed, replanning at tick={self._tick}, t={t:.3f}")
+        #     self._active_gate = obs_target_gate
+        #     self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="target_switch")
 
         t_sp = min(t_elapsed, self._t_total)
         des_pos = self._spline(t_sp)
@@ -712,8 +725,8 @@ class MyController(Controller):
         # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)},
         # acc={np.round(acc,3)}")
 
-        # target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
-        target_pos = self._current_exit
+        target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
+        # target_pos = self._current_exit
         delta = target_pos - pos
 
         des_yaw = float(np.arctan2(delta[1], delta[0]))
