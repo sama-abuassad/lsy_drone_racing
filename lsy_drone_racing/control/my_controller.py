@@ -22,8 +22,7 @@ from lsy_drone_racing.control import Controller
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-TAKEOFF_HEIGHT = 0.5
-TAKEOFF_TIME = 1.0
+
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET = 0.2  # m vor dem Gate-Zentrum
@@ -33,14 +32,14 @@ GRID_RESOLUTION = 0.03  # Hindernisauflösung (m)
 APPROACH_THRESHOLD = 0.20  # m – wann gilt Approach als erreicht?
 GATE_HALF_WIDTH = 0.40  # etwas größer als echte Gate-Öffnung
 GATE_MARGIN = 0.15  # kleinere Inflation für Gate-Rahmen
-TIME_SCALE = 2.0  # Zeitfaktor für Spline-Geschwindigkeit
+TIME_SCALE = 2.0  # Zeitfaktor für Spline-Geschwindigkeit - je höher, desto langsamer drohne
 SLOWNDOWN_SCALE = 2.0  # Faktor um letzten Abschnitt zu verlangsamen
 GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate (Spline einfrieren)
 SENSOR_RANGE = 0.7  # m – 100 for level 0,1, 0.7 für level 2
 PATH_STEP_LENGTH = 0.2  # m – Abstand der Wegpunkte im Pfadplaner
-TIMEOUT_REPLAN = (
-    0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
-)
+TIMEOUT_REPLAN =  0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
+TAKEOFF_TIME = 1.0  # s – Dauer des Takeoffs
+TAKEOFF_HEIGHT = 0.5  # m – Zielhöhe des Takeoffs
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -68,14 +67,14 @@ class MyController(Controller):
 
         self._active_gate = int(obs["target_gate"])
 
-        print("\n========== INIT ==========")
-        print(f"  n_gates      : {self._n_gates}")
-        print(f"  start pos    : {obs['pos']}")
-        print(f"  gate_pos     :\n{self._gate_pos}")
-        print(f"  gates_visited: {self._gates_visited}")
-        print(f"  target_gate  : {obs['target_gate']}")
-        print(f"  freq         : {self._freq}")
-        print("==========================\n")
+        # print("\n========== INIT ==========")
+        # print(f"  n_gates      : {self._n_gates}")
+        # print(f"  start pos    : {obs['pos']}")
+        # print(f"  gate_pos     :\n{self._gate_pos}")
+        # print(f"  gates_visited: {self._gates_visited}")
+        # print(f"  target_gate  : {obs['target_gate']}")
+        # print(f"  freq         : {self._freq}")
+        # print("==========================\n")
 
         # print("\n===== GATE NORMALS DEBUG =====")
         # for i in range(self._n_gates):
@@ -166,7 +165,7 @@ class MyController(Controller):
     ) -> np.ndarray:
         obstacles = obs["obstacles_pos"]
         # obstacles = self._filter_trusted_obstacles(obs, start_pos)
-        print(f"  [build grid] raw obstacles:\n{np.round(obstacles, 3)}")
+        # print(f"  [build grid] raw obstacles:\n{np.round(obstacles, 3)}")
 
         WORLD_MARGIN = 5.0
 
@@ -449,7 +448,7 @@ class MyController(Controller):
 
         # Case 1: number changed (NEW obstacle appeared)
         if len(current) != len(self._last_trusted):
-            print("  [REPLAN] new obstacle entered sensor range")
+            # print("  [REPLAN] new obstacle entered sensor range")
             self._last_trusted = current.copy()
             self._update_gates(obs)  # auch Gates updaten, falls sie jetzt sichtbar sind
             return True
@@ -458,7 +457,7 @@ class MyController(Controller):
         for c in current:
             dists = np.linalg.norm(self._last_trusted - c, axis=1)
             if len(dists) == 0 or np.min(dists) > 0.1:
-                print("  [REPLAN] obstacle position refined")
+                # print("  [REPLAN] obstacle position refined")
                 self._last_trusted = current.copy()
                 self._update_gates(obs)  # auch Gates updaten, falls sie jetzt sichtbar sind
                 return True
@@ -477,55 +476,75 @@ class MyController(Controller):
         # DEBUG
         # print(f"  [waypoint debug] gate_id={gate_id} from_pos={np.round(from_pos[:2],3)}")
 
-        # DEFINE GATE WAYPOINTS
-        approach, center, exit_pt = self._gate_waypoints(gate_id, from_pos)
-        # Baue Occupancy Grid und finde Pfad von aktueller Position zum approach point
-        grid = self._build_occupancy_grid(obs, start_pos, gate_id)
-        path_xy_1 = self._custom_star(grid, from_pos[:2], approach[:2], step_length=0.2)
-        if path_xy_1 is None:
-            print("  [WARNING] No path found to approach point! Using direct line.")
-            path_xy_1 = np.array([from_pos[:2], approach[:2]])
-        path_xy_2 = self._custom_star(grid, approach[:2], center[:2], step_length=0.2)
-        path_xy_3 = self._custom_star(grid, center[:2], exit_pt[:2], step_length=0.2)
 
-        self._current_exit = exit_pt.copy()
 
-        # Doppelte Punkte entfernen (können durch approach/center/exit Einfügung entstehen)
-        def remove_duplicate_points(xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
-            filtered = [xy[0]]
-            for p in xy[1:]:
-                if np.linalg.norm(p - filtered[-1]) > eps:
-                    filtered.append(p)
-            return np.array(filtered)
+        # baue nun alle pfade für alle gates mit id größer als die des aktuellen ziel gates, 
+        # damit wir direkt weiterfliegen können, falls die gates sichtbar sind
+        # berechne dafür den weg nach dem aktuellen ziel gate mit dem entsprehenden gate_id, 
+        # damit die gates als hindernisse im grid berücksichtigt werden
+        # append die wegpunkte jeder strecke sodass kompletter weg erst weg 1 kompleet, dann weg 2 
+        # und so weiter ist. 
+        # Initialisiere den pfad leer
 
-        path_xy_1 = remove_duplicate_points(path_xy_1)
-        path_xy_2 = remove_duplicate_points(path_xy_2)
-        path_xy_3 = remove_duplicate_points(path_xy_3)
+        all_waypoints = []
 
-        # add a z coordinate to the path points, so we can use them as spline waypoints
-        # z should descent or ascent smoothly from start to end of each segment
-        path_z_1 = np.linspace(start_pos[2], approach[2], len(path_xy_1))
-        path_1 = np.column_stack([path_xy_1, path_z_1])
-        path_z_2 = np.linspace(approach[2], center[2], len(path_xy_2))
-        path_2 = np.column_stack([path_xy_2, path_z_2])
-        path_z_3 = np.linspace(center[2], exit_pt[2], len(path_xy_3))
-        path_3 = np.column_stack([path_xy_3, path_z_3])
+        for id in range(gate_id, self._n_gates):
+            # DEFINE GATE WAYPOINTS
+            approach, center, exit_pt = self._gate_waypoints(gate_id, from_pos)
+            # Baue Occupancy Grid und finde Pfad von aktueller Position zum approach point
+            grid = self._build_occupancy_grid(obs, start_pos, gate_id)
+            path_xy_1 = self._custom_star(grid, from_pos[:2], approach[:2], step_length=0.2)
+            if path_xy_1 is None:
+                # print("  [WARNING] No path found to approach point! Using direct line.")
+                path_xy_1 = np.array([from_pos[:2], approach[:2]])
+            path_xy_2 = self._custom_star(grid, approach[:2], center[:2], step_length=0.2)
+            path_xy_3 = self._custom_star(grid, center[:2], exit_pt[:2], step_length=0.2)
 
-        waypoints = np.vstack(
-            [
-                np.array(path_1),
-                np.array(path_2)[1:],  # remove duplicate approach point
-                np.array(path_3)[1:],
-            ]
-        )
+            self._current_exit = exit_pt.copy()
 
-        waypoints[0] = start_pos.copy()
+            # Doppelte Punkte entfernen (können durch approach/center/exit Einfügung entstehen)
+            def remove_duplicate_points(xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+                filtered = [xy[0]]
+                for p in xy[1:]:
+                    if np.linalg.norm(p - filtered[-1]) > eps:
+                        filtered.append(p)
+                return np.array(filtered)
+
+            path_xy_1 = remove_duplicate_points(path_xy_1)
+            path_xy_2 = remove_duplicate_points(path_xy_2)
+            path_xy_3 = remove_duplicate_points(path_xy_3)
+
+            # add a z coordinate to the path points, so we can use them as spline waypoints
+            # z should descent or ascent smoothly from start to end of each segment
+            path_z_1 = np.linspace(start_pos[2], approach[2], len(path_xy_1))
+            path_1 = np.column_stack([path_xy_1, path_z_1])
+            path_z_2 = np.linspace(approach[2], center[2], len(path_xy_2))
+            path_2 = np.column_stack([path_xy_2, path_z_2])
+            path_z_3 = np.linspace(center[2], exit_pt[2], len(path_xy_3))
+            path_3 = np.column_stack([path_xy_3, path_z_3])
+
+            segment_waypoints = np.vstack(
+                [
+                    np.array(path_1),
+                    np.array(path_2)[1:],  # remove duplicate approach point
+                    np.array(path_3)[1:],
+                ]
+            )
+            if len(all_waypoints) == 0:
+                all_waypoints.append(segment_waypoints)
+            else:
+                # vermeide doppelte Übergangspunkte zwischen Gates
+                all_waypoints.append(segment_waypoints[1:])
+
+        # stelle sicher dass aktuelle position dabei ist
+        all_waypoints[0] = start_pos.copy()
+        
 
         # we want to only ake a certain amount of waitpoints, so we recalculate more often
         # waypoints = waypoints[:20]
 
         # Zeitparametrisierung: gleichmäßig nach Distanz, mit Slow-down am Ende
-        dists = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+        dists = np.linalg.norm(np.diff(all_waypoints, axis=0), axis=1)
         dists = np.maximum(dists, 0.01)
 
         # Letzten Abschnitt verlangsamen
@@ -540,16 +559,16 @@ class MyController(Controller):
 
         current_vel = self._spline_vel(t_sp) if self._spline else np.zeros(3)
 
-        self._spline = CubicSpline(t_knots, waypoints, bc_type=((1, current_vel), (1, np.zeros(3))))
-        # self._spline     = CubicSpline(t_knots, waypoints, bc_type="natural")
+        self._spline = CubicSpline(t_knots, all_waypoints, bc_type=((1, current_vel), (1, np.zeros(3))))
+        # self._spline     = CubicSpline(t_knots, all_waypoints, bc_type="natural")
         self._spline_vel = self._spline.derivative()
         self._t_start_tick = self._tick
 
-        print(f"  exit_pt   : {np.round(exit_pt, 3)}")
-        print(f"  approach  : {np.round(approach, 3)}")
-        print(f"  center    : {np.round(center, 3)}")
-        print(f"  waypoints :\n{np.round(waypoints, 3)}")
-        print(f"  t_total   : {self._t_total:.3f}s")
+        # print(f"  exit_pt   : {np.round(exit_pt, 3)}")
+        # print(f"  approach  : {np.round(approach, 3)}")
+        # print(f"  center    : {np.round(center, 3)}")
+        # print(f"  waypoints :\n{np.round(waypoints, 3)}")
+        # print(f"  t_total   : {self._t_total:.3f}s")
 
     # ── Gate-Updates ──────────────────────────────────────────────────────────
     def _update_gates(self, obs: dict) -> bool:
@@ -561,7 +580,7 @@ class MyController(Controller):
                 self._gate_quat[i] = obs["gates_quat"][i]
                 self._gates_visited[i] = True
                 rebuild = True
-                print(f"  [gate update] gate {i} now visited")
+                # print(f"  [gate update] gate {i} now visited")
         return rebuild
 
     # ── Hauptschleife ─────────────────────────────────────────────────────────
@@ -610,20 +629,25 @@ class MyController(Controller):
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="phase2_init")
 
         dist_to_gate = np.linalg.norm(pos - self._gate_pos[self._active_gate])
+        dist_to_exit = np.linalg.norm(pos - self._current_exit)
 
         # Bedingungen für neue Spline-Berechnung:
         # Timeout - Ende der spline reached, update auf Zielgate
         t_elapsed = (self._tick - self._t_start_tick) / self._freq
         if t_elapsed > self._t_total + TIMEOUT_REPLAN:
-            print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
+            # print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="timeout")
         # Dynamische Hindernisse haben sich geändert und weg von gate entfernt, also replannen
         elif self._obstacles_changed(obs, pos):
             if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
-                print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
+                # print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
                 self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="obstacle_change")
-        # Thats it, we keep following the current spline
+        # now we want to replan at exit to make sure our route makes sense
+        elif dist_to_exit < 0.5 * GATE_EXIT_OFFSET and obs_target_gate > self._active_gate:
+            # print(f"\n>>> Approaching exit, replanning for next gate at tick={self._tick}, t={t:.3f}")
+            self._active_gate = obs_target_gate
+            self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="approach_exit")
 
         t_sp = min(t_elapsed, self._t_total)
         des_pos = self._spline(t_sp)
@@ -643,7 +667,7 @@ class MyController(Controller):
 
         # PID
         if dist_to_gate < GATE_PROXIMITY_THRESHOLD:
-            print(f"  Near gate (dist={dist_to_gate:.2f}), using more conservative PID gains")
+            # print(f"  Near gate (dist={dist_to_gate:.2f}), using more conservative PID gains")
             # Near gate: tighter proportional, moderate integral
             kp = np.array([3.0, 3.0, 2.0])  # restore XY tracking strength
             kd = np.array([3.0, 3.0, 1.5])
@@ -653,7 +677,7 @@ class MyController(Controller):
             kd = np.array([2.0, 2.0, 1.5])
             ki = np.array([2.0, 2.0, 1.0])
 
-        kp_new = kp
+        kp_new = kp 
         kd_new = kd
         ki_new = ki
 
@@ -680,12 +704,12 @@ class MyController(Controller):
 
         des_yaw = float(np.arctan2(delta[1], delta[0]))
 
-        if self._tick % 20 == 0:
-            print(
-                f"  [t={t:.2f}] gate={self._active_gate} "
-                f"pos={np.round(pos, 3)} des={np.round(des_pos, 3)} "
-                f"err={np.round(pos - des_pos, 3)}"
-            )
+        # if self._tick % 20 == 0:
+            # print(
+            #     f"  [t={t:.2f}] gate={self._active_gate} "
+            #     f"pos={np.round(pos, 3)} des={np.round(des_pos, 3)} "
+            #     f"err={np.round(pos - des_pos, 3)}"
+            # )
 
         return np.array(
             [
