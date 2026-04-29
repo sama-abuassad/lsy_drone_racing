@@ -24,10 +24,10 @@ if TYPE_CHECKING:
 
 # # output debug info to a file, so we can analyze it after
 
-# import sys
+import sys
 
-# # Open a file and redirect print output
-# sys.stdout = open("output.log", "w")
+# Open a file and redirect print output
+sys.stdout = open("output.log", "w")
 
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ GRID_RESOLUTION = 0.03  # Hindernisauflösung (m)
 APPROACH_THRESHOLD = 0.20  # m – wann gilt Approach als erreicht?
 GATE_HALF_WIDTH = 0.40  # etwas größer als echte Gate-Öffnung
 GATE_MARGIN = 0.15  # kleinere Inflation für Gate-Rahmen
-TIME_SCALE = 2.0  # Zeitfaktor für Spline-Geschwindigkeit - je höher, desto langsamer drohne
+TIME_SCALE = 1.0  # Zeitfaktor für Spline-Geschwindigkeit - je höher, desto langsamer drohne
 SLOWNDOWN_SCALE = 2.0  # Faktor um letzten Abschnitt zu verlangsamen
 GATE_PROXIMITY_THRESHOLD = 0.5  # m – wann gilt die Drohne als "nahe" am Gate (Spline einfrieren)
 SENSOR_RANGE = 0.7  # m – 100 for level 0,1, 0.7 für level 2
@@ -47,7 +47,7 @@ PATH_STEP_LENGTH = 0.2  # m – Abstand der Wegpunkte im Pfadplaner
 TIMEOUT_REPLAN = (
     0.5  # s – maximale Zeit auf einer Spline bevor Replan (auch wenn Ziel nicht erreicht)
 )
-TAKEOFF_TIME = 0.2  # s – Dauer des Takeoffs
+TAKEOFF_TIME = 2.0  # s – Dauer des Takeoffs
 TAKEOFF_HEIGHT = 0.5  # m – Zielhöhe des Takeoffs
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -75,6 +75,12 @@ class MyController(Controller):
         self._current_goal = None
 
         self._active_gate = int(obs["target_gate"])
+
+        # print obeservation keys
+        print("\n========== OBSERVATION KEYS ==========")
+        for k in obs.keys():
+            print(f"  {k}")
+    
 
         # print("\n========== INIT ==========")
         # print(f"  n_gates      : {self._n_gates}")
@@ -617,7 +623,8 @@ class MyController(Controller):
         obs_target_gate = int(obs["target_gate"])
 
         if obs_target_gate != self._active_gate:
-            print(f"\n>>> Target gate changed to {obs_target_gate} at tick={self._tick}, t={t:.3f}")
+            # print(f"\n>>> Target gate changed to {obs_target_gate} at tick={self._tick}, t={t:.3f}")
+            pass
 
         # ── Phase 1: Takeoff ──────────────────────────────────────────────────
         if t < TAKEOFF_TIME:
@@ -646,7 +653,7 @@ class MyController(Controller):
 
         # ── Phase 2: Spline initialisieren ────────────────────────────────────
         if self._spline is None:
-            print(f"\n>>> Entering phase 2 at tick={self._tick}, t={t:.3f}")
+            # print(f"\n>>> Entering phase 2 at tick={self._tick}, t={t:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="phase2_init")
 
@@ -660,20 +667,20 @@ class MyController(Controller):
         # Timeout - Ende der spline reached, update auf Zielgate
         t_elapsed = (self._tick - self._t_start_tick) / self._freq
         if t_elapsed > self._t_total + TIMEOUT_REPLAN:
-            print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
+            # print(f"\n>>> Spline timeout reached at tick={self._tick}, t={t:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="timeout")
         # Dynamische Hindernisse haben sich geändert und weg von gate entfernt, also replannen
         elif self._obstacles_changed(obs, pos):
             if dist_to_gate > GATE_PROXIMITY_THRESHOLD:
-                print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
+                # print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
                 self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="obstacle_change")
         # now we want to replan at exit to make sure our route makes sense
         elif (dist_to_exit < (0.7 * GATE_EXIT_OFFSET)) and (obs_target_gate > self._active_gate):
-            print(
-                f"\n>>> Approaching exit, replanning for next gate at tick={self._tick}, t={t:.3f}"
-            )
-            print(f"  dist_to_exit={dist_to_exit:.3f}, dist_to_gate={dist_to_gate:.3f}")
+            # print(
+            #     # f"\n>>> Approaching exit, replanning for next gate at tick={self._tick}, t={t:.3f}"
+            # )
+            # print(f"  dist_to_exit={dist_to_exit:.3f}, dist_to_gate={dist_to_gate:.3f}")
             self._active_gate = obs_target_gate
             self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="approach_exit")
         # replan on target switch
@@ -685,7 +692,12 @@ class MyController(Controller):
         t_sp = min(t_elapsed, self._t_total)
         des_pos = self._spline(t_sp)
         des_vel = self._spline_vel(t_sp)
-        des_vel = np.clip(des_vel, -1.0, 1.0)
+        # des_vel = np.clip(des_vel, -1.0, 1.0)
+        max_speed = 1.5
+        speed = np.linalg.norm(des_vel)
+
+        if speed > max_speed:
+            des_vel = des_vel * (max_speed / speed)
 
         # if self._tick % 20 == 0:
         #     future_t = min(t_sp + 0.5, self._t_total)
@@ -699,17 +711,44 @@ class MyController(Controller):
         dist_to_gate = np.linalg.norm(pos - self._gate_pos[self._active_gate])
 
         # PID
-        if dist_to_gate < GATE_PROXIMITY_THRESHOLD:
-            # print(f"  Near gate (dist={dist_to_gate:.2f}), using more conservative PID gains")
-            # Near gate: tighter proportional, moderate integral
-            kp = np.array([3.0, 3.0, 2.0])  # restore XY tracking strength
-            kd = np.array([3.0, 3.0, 1.5])
-            ki = np.array([1.0, 1.0, 0.5])  # reduce integral near gate to avoid windup
-        else:
-            kp = np.array([4.0, 4.0, 3.0])
-            kd = np.array([2.0, 2.0, 1.5])
-            ki = np.array([2.0, 2.0, 1.0])
+        # if dist_to_gate < GATE_PROXIMITY_THRESHOLD:
+        #     # print(f"  Near gate (dist={dist_to_gate:.2f}), using more conservative PID gains")
+        #     # Near gate: tighter proportional, moderate integral
+        #     kp = np.array([2.0, 2.0, 2.0])  # restore XY tracking strength
+        #     kd = np.array([0.3, 0.3, 0.3])  # reduce damping to allow more responsive control
+        #     ki = np.array([0.0, 0.0, 0.0])  # reduce integral near gate to avoid windup
+        # else:
+        #     kp = np.array([1.5, 1.5, 1.5])  # we rely on spline tracking, so no need for strong proportional gain
+        #     kd = np.array([0.2, 0.2, 0.2])
+        #     ki = np.array([0.2, 0.2, 0.2])
 
+        # WOKING_TIME_SCALE = 2.0
+
+        # scale = WOKING_TIME_SCALE / TIME_SCALE
+
+        # alpha = np.clip(dist_to_gate / GATE_PROXIMITY_THRESHOLD, 0.0, 1.0)
+
+        # kp_far = np.array([0.5, 0.5, 0.5])   # further from gate: softer control, rely on spline
+        # kp_near = np.array([1.0, 1.0, 1.0])
+
+        # kd_far = np.array([0.2, 0.2, 0.2])
+        # kd_near = np.array([0.8, 0.8, 0.8])
+
+        # ki_far = np.array([0.2, 0.2, 0.2])
+        # ki_near = np.array([0.1, 0.1, 0.1])
+
+        # kp = alpha * kp_far + (1 - alpha) * kp_near
+        # kd = alpha * kd_far + (1 - alpha) * kd_near
+        # ki = alpha * ki_far + (1 - alpha) * ki_near
+
+        kp = np.array([1.5, 1.5, 1.5])
+        kd = np.array([0.3, 0.3, 0.3])
+        ki = np.array([0.0, 0.0, 0.0])
+        
+        # kp_new = kp                      # unchanged
+        # kd_new = kd * scale              # more damping if slower time
+        # ki_new = ki / scale              # less integral if slower time
+        
         kp_new = kp
         kd_new = kd
         ki_new = ki
@@ -719,14 +758,23 @@ class MyController(Controller):
 
         # print("vz:", vel[2])
 
-        self._pos_integral += pos_error * dt
-        self._pos_integral = np.clip(self._pos_integral, -0.5, 0.5)
+        if np.linalg.norm(pos_error) < 0.8:
+            self._pos_integral += pos_error * dt
+        else:
+            self._pos_integral *= 0.9   # decay when far away
+        
+        self._pos_integral = np.clip(self._pos_integral, -0.2, 0.2)
 
-        acc = kp_new * pos_error + kd_new * vel_error + ki_new * self._pos_integral
+        acc = kp_new * pos_error + kd_new * vel_error
+        # + ki_new * self._pos_integral
         # print(f"  [PID debug] pos_error={np.round(pos_error,3)}
         # vel_error={np.round(vel_error,3)} acc={np.round(acc,3)}")
-        acc[:2] = np.clip(acc[:2], -2.0, 2.0)
-        acc[2] = np.clip(acc[2], -2.0, 2.0)
+        # acc[:2] = np.clip(acc[:2], -2.0, 2.0)
+        # acc[2] = np.clip(acc[2], -2.0, 2.0)
+
+        # alpha = 0.7   # 0 = very smooth, 1 = no smoothing
+        # acc = alpha * acc + (1 - alpha) * acc
+        # acc = acc
 
         # print(f"des_z={des_pos[2]:.2f}, actual_z={pos[2]:.2f}")
         # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)},
