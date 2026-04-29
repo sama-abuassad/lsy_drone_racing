@@ -33,8 +33,8 @@ sys.stdout = open("output.log", "w")
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET = 0.2  # m vor dem Gate-Zentrum
-GATE_EXIT_OFFSET = 0.7  # m hinter dem Gate-Zentrum - minimal double GATE_MARGIN
-OBSTACLE_MARGIN = 0.15  # physischer Radius der Hindernisse (m)
+GATE_EXIT_OFFSET = 1.0  # m hinter dem Gate-Zentrum - minimal double GATE_MARGIN, aber kleiner als  2 * SENSOR_RANGE
+OBSTACLE_MARGIN = 0.25  # physischer Radius der Hindernisse (m)
 GRID_RESOLUTION = 0.03  # Hindernisauflösung (m)
 APPROACH_THRESHOLD = 0.20  # m – wann gilt Approach als erreicht?
 GATE_HALF_WIDTH = 0.40  # etwas größer als echte Gate-Öffnung
@@ -664,7 +664,7 @@ class MyController(Controller):
                 print(f"\n>>> Obstacles changed at tick={self._tick}, t={t:.3f}")
                 self._build_spline(pos, gate_id=self._active_gate, obs=obs, label="obstacle_change")
         # now we want to replan at exit to make sure our route makes sense
-        elif ((dist_to_exit < (0.5 * GATE_EXIT_OFFSET)) and (obs_target_gate > self._active_gate)):
+        elif ((dist_to_exit < (0.7 * GATE_EXIT_OFFSET)) and (obs_target_gate > self._active_gate)):
             print(f"\n>>> Approaching exit, replanning for next gate at tick={self._tick}, t={t:.3f}")
             print(f"  dist_to_exit={dist_to_exit:.3f}, dist_to_gate={dist_to_gate:.3f}")
             self._active_gate = obs_target_gate
@@ -725,8 +725,8 @@ class MyController(Controller):
         # print(f"pos_error={np.round(pos_error,3)}, vel_error={np.round(vel_error,3)},
         # acc={np.round(acc,3)}")
 
-        target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
-        # target_pos = self._current_exit
+        # target_pos = self._gate_pos[min(self._active_gate, self._n_gates - 1)]
+        target_pos = self._current_exit
         delta = target_pos - pos
 
         des_yaw = float(np.arctan2(delta[1], delta[0]))
