@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 GATE_APPROACH_OFFSET = 0.2  # m vor dem Gate-Zentrum
-GATE_EXIT_OFFSET = 1.0  # m hinter dem Gate-Zentrum - minimal double GATE_MARGIN, 
+GATE_EXIT_OFFSET = 1.0  # m hinter dem Gate-Zentrum - minimal double GATE_MARGIN,
 # aber kleiner als  2 * SENSOR_RANGE
 OBSTACLE_MARGIN = 0.25  # physischer Radius der Hindernisse (m)
 GRID_RESOLUTION = 0.03  # Hindernisauflösung (m)
